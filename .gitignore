@@ -1,0 +1,4 @@
+.DS_Store
+
+# Local emulator image archive (too large for regular GitHub storage).
+/dataset/ndtp-telemetry-emulator.tar
