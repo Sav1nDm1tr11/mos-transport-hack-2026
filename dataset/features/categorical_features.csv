@@ -1,0 +1,13 @@
+feature
+stop_key
+target_address
+target_grid_4
+target_grid_3
+target_grid_2
+last_location_valid
+last_is_hist
+last_speed_outlier
+last_alt_outlier
+current_grid_4
+current_grid_3
+current_grid_2
