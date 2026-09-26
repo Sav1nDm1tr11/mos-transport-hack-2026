@@ -1,0 +1,136 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "event_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "ndtp",
+        "replay",
+        "scenario"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "tr_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Tr Id",
+      "type": "string"
+    },
+    "unit_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Unit Id",
+      "type": "string"
+    },
+    "event_time": {
+      "format": "date-time",
+      "title": "Event Time",
+      "type": "string"
+    },
+    "receive_time": {
+      "format": "date-time",
+      "title": "Receive Time",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "lat": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lat"
+    },
+    "lon": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lon"
+    },
+    "speed_kmh": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Speed Kmh"
+    },
+    "heading_deg": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Heading Deg"
+    },
+    "location_valid": {
+      "title": "Location Valid",
+      "type": "boolean"
+    },
+    "quality_flags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Quality Flags",
+      "type": "array"
+    },
+    "source_identity": {
+      "additionalProperties": true,
+      "title": "Source Identity",
+      "type": "object"
+    }
+  },
+  "required": [
+    "run_id",
+    "event_id",
+    "source",
+    "tr_id",
+    "unit_id",
+    "event_time",
+    "receive_time",
+    "ingested_at",
+    "location_valid"
+  ],
+  "title": "TelemetryEvent",
+  "type": "object"
+}
