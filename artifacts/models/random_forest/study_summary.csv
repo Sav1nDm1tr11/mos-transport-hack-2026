@@ -1,0 +1,3 @@
+mode,trials,complete,best_cv_mae
+direct,50,44,40.71271630170548
+residual,50,43,43.70847358838158
