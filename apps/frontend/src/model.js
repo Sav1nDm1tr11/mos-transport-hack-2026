@@ -26,3 +26,8 @@ export function unproject(x,y,z) {
   const s=256*2**z;
   return [x/s*360-180,Math.atan(Math.sinh(Math.PI*(1-2*y/s)))*180/Math.PI];
 }
+
+export function predictionFresh(p,now=Date.now(),maxAgeSeconds=90) {
+  const age=now-Date.parse(p?.as_of);
+  return p?.status==='ok' && Number.isFinite(p.delay_s) && age>=0 && age<=maxAgeSeconds*1000 && Date.parse(p.target_time_begin)>now;
+}

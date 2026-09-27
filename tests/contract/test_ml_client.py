@@ -411,3 +411,26 @@ async def test_independent_split_is_deterministic_and_preserves_context():
     assert bodies[:2] == bodies[2:]
     assert bodies[0]["request_id"] != bodies[1]["request_id"]
     assert all(b["schedule_version"] == "sched-1" for b in bodies)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"supported_schema_versions": ["2"]},
+        {"requires_neighbor_vehicles": True},
+        {"required_fields": ["telemetry.unavailable"]},
+    ],
+)
+async def test_metadata_check_rejects_unsupported_capabilities_without_batch(updates):
+    async def unexpected(request):
+        pytest.fail("check must not invoke model")
+
+    client = MLClient(
+        "http://ml",
+        transport=httpx.MockTransport(handlers(unexpected, info=model_info(**updates))),
+    )
+    try:
+        with pytest.raises(MLClientError):
+            await client.check()
+    finally:
+        await client.close()

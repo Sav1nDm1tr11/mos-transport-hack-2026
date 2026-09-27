@@ -27,3 +27,14 @@ test('geographic projection correctly locates prime meridian and equator',()=>{
   const [lon,lat]=unproject(...project(37.62,55.75,11),11);
   assert.ok(Math.abs(lon-37.62)<1e-8 && Math.abs(lat-55.75)<1e-8);
 });
+
+test('prediction freshness expires independently of telemetry and preserves zero', async()=>{
+  const {predictionFresh}=await import('../src/model.js');
+  const now=Date.parse('2026-09-27T12:00:00Z');
+  const p={status:'ok',delay_s:0,as_of:'2026-09-27T11:59:30Z',target_time_begin:'2026-09-27T12:12:00Z'};
+  assert.equal(predictionFresh(p,now),true);
+  assert.equal(predictionFresh({...p,as_of:'2026-09-27T11:58:00Z'},now),false);
+  assert.equal(predictionFresh({...p,as_of:'2026-09-27T12:00:01Z'},now),false);
+  assert.equal(predictionFresh({...p,target_time_begin:'2026-09-27T11:59:59Z'},now),false);
+  assert.equal(predictionFresh({...p,status:'error'},now),false);
+});

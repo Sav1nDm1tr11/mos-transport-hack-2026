@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 
 from processing_worker.ml_client import MLClientError
@@ -49,10 +50,25 @@ class Worker:
 
     async def prepare(self, as_of=None):
         async with self.cycle_lock:
-            if await asyncio.to_thread(self.store.pending_batches):
-                raise Backpressure("prediction_cycle_pending")
-            request_id = await asyncio.to_thread(
-                self._prepare, as_of or datetime.now(UTC)
+            clock = as_of or datetime.now(UTC)
+            try:
+                if await asyncio.to_thread(self.store.pending_batches):
+                    raise Backpressure("prediction_cycle_pending")
+                request_id = await asyncio.to_thread(self._prepare, clock)
+            except Backpressure as exc:
+                await asyncio.to_thread(
+                    self.store.record_cycle,
+                    self.settings.run_id,
+                    as_of=clock.isoformat(),
+                    status=str(exc),
+                )
+                raise
+            await asyncio.to_thread(
+                self.store.record_cycle,
+                self.settings.run_id,
+                as_of=clock.isoformat(),
+                request_id=request_id,
+                status="queued" if request_id else "no_target",
             )
             self.wakeup.set()
             return request_id
@@ -106,14 +122,16 @@ class Worker:
                 if pending:
                     raw = pending[0]
                     batch = PredictionBatch.model_validate(raw)
+                    started = time.monotonic()
                     try:
                         results = await self.ml.predict(batch)
-                    except MLClientError:
+                    except MLClientError as exc:
                         results = [
                             PredictionResult(
                                 prediction_id=t.prediction_id,
                                 status="error",
                                 error_code="ml_contract_error",
+                                reason_codes=[str(exc)[:512]],
                             )
                             for t in batch.targets
                         ]
@@ -121,6 +139,25 @@ class Worker:
                         self.store.finish_batch,
                         raw,
                         [r.model_dump(mode="json") for r in results],
+                    )
+                    await asyncio.to_thread(
+                        self.store.record_cycle,
+                        batch.run_id,
+                        request_id=batch.request_id,
+                        as_of=batch.as_of.isoformat(),
+                        status="complete",
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                        targets=len(results),
+                        counts={
+                            s: sum(r.status == s for r in results)
+                            for s in ("ok", "insufficient_data", "error")
+                        },
+                        model_versions=sorted(
+                            {r.model_version for r in results if r.model_version}
+                        ),
+                        reason_codes=sorted(
+                            {code for r in results for code in r.reason_codes}
+                        )[:20],
                     )
                     continue
             except Exception as exc:

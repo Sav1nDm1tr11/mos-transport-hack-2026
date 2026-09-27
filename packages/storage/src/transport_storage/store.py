@@ -77,6 +77,8 @@ class Store:
         CREATE INDEX IF NOT EXISTS predictions_vehicle ON predictions(run_id,tr_id,as_of);
         CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY AUTOINCREMENT,
           run_id TEXT, type TEXT, entity_id TEXT, created_at TEXT, body TEXT);
+        CREATE TABLE IF NOT EXISTS prediction_cycles(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, body TEXT NOT NULL);
         PRAGMA user_version=1;
         """)
         self.db.commit()
@@ -459,3 +461,71 @@ class Store:
                     (run_id, after, limit),
                 )
             ]
+
+    def record_cycle(self, run_id, **detail):
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO prediction_cycles(run_id,body) VALUES (?,?)",
+                (run_id, canonical(dict(recorded_at=now(), **detail))),
+            )
+            db.execute(
+                "DELETE FROM prediction_cycles WHERE id <= "
+                "(SELECT max(id)-10000 FROM prediction_cycles)"
+            )
+
+    def cycles(self, run_id, limit=50):
+        with self.lock:
+            return [
+                json.loads(r[0])
+                for r in self.db.execute(
+                    "SELECT body FROM prediction_cycles WHERE run_id=? ORDER BY id DESC LIMIT ?",
+                    (run_id, limit),
+                )
+            ]
+
+    def coverage(self, run_id, schedule_version, as_of, max_age_seconds=90):
+        with self.lock:
+            targets = {
+                (v["tr_id"], v["stop_visit_id"], timestamp(v["time_begin"]))
+                for v in self.targets(schedule_version, as_of)
+            }
+            seen, predicted = set(), set()
+            for row in self.db.execute(
+                "SELECT p.body,b.body FROM predictions p JOIN batches b USING(request_id) "
+                "WHERE p.run_id=? AND p.as_of>=? AND p.as_of<=? ORDER BY p.as_of DESC,p.rowid DESC",
+                (
+                    run_id,
+                    timestamp(as_of - timedelta(seconds=max_age_seconds)),
+                    timestamp(as_of),
+                ),
+            ):
+                prediction, batch = json.loads(row[0]), json.loads(row[1])
+                if batch.get("schedule_version") != schedule_version:
+                    continue
+                key = (
+                    prediction["tr_id"],
+                    prediction["target_stop_id"],
+                    timestamp(prediction["target_time_begin"]),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                if key in targets and prediction["status"] == "ok":
+                    predicted.add(prediction["tr_id"])
+            return dict(
+                target_vehicles=len({t[0] for t in targets}),
+                predicted_vehicles=len(predicted),
+                max_age_seconds=max_age_seconds,
+                evaluated_at=timestamp(as_of),
+            )
+
+    def dashboard(self, run_id, limit, schedule_version, as_of):
+        with self.lock:
+            data = self.snapshot(run_id, limit)
+            data["coverage"] = self.coverage(run_id, schedule_version, as_of)
+            data["prediction_cycles"] = self.cycles(run_id, 10)
+            data["prediction_backlog"] = self.db.execute(
+                "SELECT count(*) FROM batches WHERE run_id=? AND status='pending'",
+                (run_id,),
+            ).fetchone()[0]
+            return data

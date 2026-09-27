@@ -45,10 +45,30 @@ CSV индексируются во временной SQLite; один срез
   --template dataset/sample_submission.csv --output .runtime/offline-run \
   --destination .runtime/submission.csv
 .venv/bin/python tools/ml_offline/offline.py evaluate \
-  --labels dataset/labels/labels_test.csv --label-column target \
+  --labels dataset/labels/labels_test.csv --label-column target_delay_s \
   --split test --output .runtime/test-run
 ```
 
 Имя label-column задайте по заголовку файла меток. MAE допустим только для train/test.
 Экспорт требует точное покрытие ID шаблона, сохраняет порядок, разделитель «;».
 Пропущенные/ошибочные результаты не заменяются нулём.
+
+## Изолированное демо и диагностика
+
+```sh
+.venv/bin/python tools/ml/demo.py --smoke
+.venv/bin/python tools/ml/demo.py
+```
+
+Демо запускает backend на 8010 и симулятор на 8090, создаёт временную БД,
+отдельный токен и согласованные по времени расписание/телеметрию.
+Проверяет успешный прогноз и серверное покрытие. Ctrl-C завершает оба процесса
+и удаляет временную БД. Порты должны быть свободны; основной backend 8000 не затрагивается.
+Для браузерной проверки: --browser-test (нужны Node, Playwright и Chromium).
+
+GET /api/v1/prediction-cycles возвращает последние записи циклов потока.
+POST /api/v1/ml/check выполняет явную проверку готовности и совместимости метаданных.
+Оба маршрута требуют Bearer-токен. Проверка готовности backend не ждёт модель.
+В dashboard есть очередь и последние циклы с длительностью, версиями и причинами.
+Покрытие считается по текущим целям (10,15] минут с результатом не старше 90 секунд;
+история хранит все результаты, включая устаревшие и ошибочные.

@@ -268,6 +268,7 @@ class MLClient:
             raise MLClientError(
                 "configured history is shorter than model history", reject_batch=True
             )
+        self._validate_metadata(info)
         return info
 
     def validate_compatibility(self, batch: PredictionBatch, info: ModelInfo) -> None:
@@ -313,11 +314,7 @@ class MLClient:
 
     @staticmethod
     def _validate_compatibility(batch: PredictionBatch, info: ModelInfo) -> None:
-        if batch.schema_version not in info.supported_schema_versions:
-            raise MLClientError(
-                f"ML model does not support schema_version {batch.schema_version}",
-                reject_batch=True,
-            )
+        MLClient._validate_metadata(info)
         if len(batch.targets) > info.max_batch_size and not info.batch_independent:
             raise MLClientError(
                 f"batch has {len(batch.targets)} targets; ML maximum is {info.max_batch_size}",
@@ -327,6 +324,13 @@ class MLClient:
             raise MLClientError(
                 "ML model requires a network resource not present in this batch",
                 reject_batch=True,
+            )
+
+    @staticmethod
+    def _validate_metadata(info: ModelInfo) -> None:
+        if "1" not in info.supported_schema_versions:
+            raise MLClientError(
+                "ML model does not support schema_version 1", reject_batch=True
             )
         if info.requires_neighbor_vehicles:
             raise MLClientError(

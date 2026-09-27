@@ -1,5 +1,5 @@
 import {request,events} from './api.js';
-import {escapeHtml as esc,freshness,delayLabel} from './model.js';
+import {escapeHtml as esc,freshness,delayLabel,predictionFresh} from './model.js';
 import {TransitMap} from './map.js';
 const $=id=>document.getElementById(id);
 const state={token:'',run:'live',vehicles:[],predictions:[],issues:[],selected:null,filter:'all',query:'',snapshot:null,detail:null,connected:false};
@@ -16,8 +16,10 @@ function render(){
   $('total').textContent=snap?number(snap.counts.vehicles):'—';
   $('scope').textContent=snap?`В выборке ${state.vehicles.length} из ${snap.counts.vehicles} ТС`:'Снимок бэкенда';
   $('fresh').textContent=snap?number(state.vehicles.filter(v=>freshness(v)).length):'—';
-  const latest=new Map();for(const p of state.predictions)if(!latest.has(p.tr_id))latest.set(p.tr_id,p);
-  $('forecast').textContent=snap?number([...latest.values()].filter(p=>p.status==='ok'&&Number.isFinite(p.delay_s)).length):'—';
+  $('forecast').textContent=snap?.coverage?number(snap.coverage.predicted_vehicles):'—';
+  $('coverage-note').textContent=snap?.coverage?`Из ${snap.coverage.target_vehicles} ТС с текущей целью · не старше ${snap.coverage.max_age_seconds} с`:'Нет снимка покрытия';
+  $('cycles').innerHTML=(snap?.prediction_cycles||[]).map(c=>`<tr><td>${formatTime(c.as_of)}</td><td>${esc(c.status)}</td><td>${number(c.duration_ms)} мс</td><td>${esc(c.model_versions?.join(', ')||'—')}</td><td>${esc(c.reason_codes?.join(', ')||'—')}</td></tr>`).join('')||empty('Циклы ещё не запускались',5);
+  $('backlog').textContent=`В очереди: ${snap?.prediction_backlog??'—'}`;
   $('issues-count').textContent=snap?number(state.issues.length):'—';
   $('list-count').textContent=visible.length;
   $('list-scope').textContent=`Показано ${visible.length} из ${state.vehicles.length} в выборке · максимум 200`;
@@ -26,7 +28,7 @@ function render(){
   map.update(visible,state.selected);
   $('snapshot-time').textContent=snap?`Снимок ${formatTime(snap.server_time)}`:'Нет снимка';
   $('model-state').textContent=snap?.ml==='disabled'?'ML-модель не подключена · прогноз может быть недоступен':snap?'ML настроена · статус каждого результата указан отдельно':'Состояние модели неизвестно';
-  $('predictions').innerHTML=state.predictions.length?state.predictions.map(p=>`<tr><td class="mono">${formatTime(p.as_of)}</td><td>${esc(p.tr_id)}</td><td><span class="badge ${p.status==='ok'?'blue':'muted'}">${delayLabel(p)}</span></td><td>${esc(p.error_code||p.status)}</td><td>${esc(p.target_stop_id||'—')}<small>${formatTime(p.target_time_begin)}</small></td><td>${esc(p.model_version||'—')}</td></tr>`).join(''):empty('В этом потоке ещё нет результатов прогнозирования',6);
+  $('predictions').innerHTML=state.predictions.length?state.predictions.map(p=>`<tr><td class="mono">${formatTime(p.as_of)}</td><td>${esc(p.tr_id)}</td><td><span class="badge ${p.status==='ok'?'blue':'muted'}">${delayLabel(p)}</span></td><td>${esc(p.error_code||p.status)}<small>${esc((p.reason_codes||[]).join(', '))}</small></td><td>${esc(p.target_stop_id||'—')}<small>${formatTime(p.target_time_begin)}</small></td><td>${esc(p.model_version||'—')}<small>${esc(p.feature_version||'—')}</small></td></tr>`).join(''):empty('В этом потоке ещё нет результатов прогнозирования',6);
   $('issues').innerHTML=state.issues.length?state.issues.map(i=>`<tr><td class="mono">${formatTime(i.created_at)}</td><td>${esc(i.unit_id||'—')}</td><td><span class="badge warning">${esc(i.reason||'Проблема данных')}</span></td><td>${esc(i.detail||'—')}</td></tr>`).join(''):empty('Проблем данных не зарегистрировано',4);
   renderDetails();
 }
@@ -34,7 +36,7 @@ function renderDetails(){
   const v=state.detail?.vehicle||state.vehicles.find(v=>v.tr_id===state.selected);
   if(!v){$('details').innerHTML='<div class="empty large">Выберите транспорт<span>Нажмите на строку в списке<br>или маркер на карте</span></div>';return;}
   const p=state.detail?.predictions?.[0];
-  $('details').innerHTML=`<div class="detail-hero"><div class="detail-bus">▣</div><span class="eyebrow">ТРАНСПОРТНОЕ СРЕДСТВО</span><h3>${esc(v.tr_id)}</h3><span class="badge ${freshness(v)?'good':'warning'}">${freshness(v)?'Свежая телеметрия':'Данные устарели'}</span></div><div class="speed"><span>Скорость</span><strong>${number(v.speed_kmh)}<small> км/ч</small></strong></div><dl><dt>Устройство</dt><dd>${esc(v.unit_id)}</dd><dt>Последний пакет</dt><dd>${formatTime(v.event_time)}</dd><dt>Позиция получена</dt><dd>${formatTime(v.position_time)}</dd><dt>GPS последнего пакета</dt><dd class="${v.location_valid?'text-good':'text-warning'}">${v.location_valid?'Валиден':'Невалиден'}</dd><dt>Координаты</dt><dd class="mono">${Number.isFinite(v.lat)?v.lat.toFixed(5):'—'}<br>${Number.isFinite(v.lon)?v.lon.toFixed(5):'—'}</dd></dl><button id="focus-vehicle" class="button full">⌖ Показать на карте</button><div class="prediction-card"><span class="eyebrow">ПРОГНОЗ ЗАДЕРЖКИ</span><strong>${state.detail?delayLabel(p):'Загрузка…'}</strong><p>${esc(state.detail?(p?.error_code|| (p?`Расчёт: ${formatTime(p.as_of)}`:'Прогноз для этого ТС ещё не получен')):'Получаем карточку транспорта')}</p></div><div class="detail-note">${v.location_valid?'Показана последняя пригодная позиция.':'GPS последнего пакета невалиден. На карте сохранена предыдущая пригодная позиция.'}</div><div class="detail-note">Флаги качества: ${esc((v.quality_flags||[]).join(', ')||'не отмечены')}</div>`;
+  $('details').innerHTML=`<div class="detail-hero"><div class="detail-bus">▣</div><span class="eyebrow">ТРАНСПОРТНОЕ СРЕДСТВО</span><h3>${esc(v.tr_id)}</h3><span class="badge ${freshness(v)?'good':'warning'}">${freshness(v)?'Свежая телеметрия':'Данные устарели'}</span></div><div class="speed"><span>Скорость</span><strong>${number(v.speed_kmh)}<small> км/ч</small></strong></div><dl><dt>Устройство</dt><dd>${esc(v.unit_id)}</dd><dt>Последний пакет</dt><dd>${formatTime(v.event_time)}</dd><dt>Позиция получена</dt><dd>${formatTime(v.position_time)}</dd><dt>GPS последнего пакета</dt><dd class="${v.location_valid?'text-good':'text-warning'}">${v.location_valid?'Валиден':'Невалиден'}</dd><dt>Координаты</dt><dd class="mono">${Number.isFinite(v.lat)?v.lat.toFixed(5):'—'}<br>${Number.isFinite(v.lon)?v.lon.toFixed(5):'—'}</dd></dl><button id="focus-vehicle" class="button full">⌖ Показать на карте</button><div class="prediction-card"><span class="eyebrow">ПРОГНОЗ ЗАДЕРЖКИ</span><strong>${state.detail?(p?.status==='ok'&&!predictionFresh(p)?'Прогноз устарел':delayLabel(p)):'Загрузка…'}</strong><p>${esc(state.detail?(p?.error_code|| (p?`Расчёт: ${formatTime(p.as_of)}`:'Прогноз для этого ТС ещё не получен')):'Получаем карточку транспорта')}</p>${p?`<dl><dt>Цель</dt><dd>${esc(p.target_stop_id)}</dd><dt>Плановое время</dt><dd>${formatTime(p.target_time_begin)}</dd><dt>Горизонт при расчёте</dt><dd>${number((Date.parse(p.target_time_begin)-Date.parse(p.as_of))/60000)} мин</dd><dt>Модель / признаки</dt><dd>${esc(p.model_version||'—')} / ${esc(p.feature_version||'—')}</dd><dt>Причины</dt><dd>${esc((p.reason_codes||[]).join(', ')||'—')}</dd>${p.late_probability!=null?`<dt>Вероятность задержки &gt; ${number(p.late_threshold_s)} с</dt><dd>${number(p.late_probability*100)}%</dd>`:''}${p.interval_lower_s!=null?`<dt>Интервал (${number(p.interval_coverage*100)}%)</dt><dd>${number(p.interval_lower_s)}…${number(p.interval_upper_s)} с</dd>`:''}</dl>`:''}</div><div class="detail-note">${v.location_valid?'Показана последняя пригодная позиция.':'GPS последнего пакета невалиден. На карте сохранена предыдущая пригодная позиция.'}</div><div class="detail-note">Флаги качества: ${esc((v.quality_flags||[]).join(', ')||'не отмечены')}</div>`;
   $('focus-vehicle').onclick=()=>map.focus(v);
 }
 async function select(id){state.selected=id;state.detail=null;render();await loadDetail();}
@@ -106,3 +108,10 @@ $('export').onclick=()=>{
   const url=URL.createObjectURL(new Blob(['\uFEFF'+rows.map(r=>r.map(cell).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='transport-predictions.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
 window.addEventListener('beforeunload',stop);logout();
+
+$('check-ml').onclick=async()=>{
+  const button=$('check-ml');button.disabled=true;
+  try { const result=await request('ml/check',state.token,session?.signal,{method:'POST'});$('ml-check-result').textContent=`Готова: ${result.model_info.model_version} / ${result.model_info.feature_version}`; }
+  catch { $('ml-check-result').textContent='Модель недоступна или несовместима. Проверьте preflight и настройки истории.'; }
+  finally {button.disabled=false;}
+};
