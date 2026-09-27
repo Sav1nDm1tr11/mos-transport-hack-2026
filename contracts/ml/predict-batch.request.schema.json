@@ -1,0 +1,376 @@
+{
+  "$defs": {
+    "PredictionTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "prediction_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Prediction Id",
+          "type": "string"
+        },
+        "tr_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tr Id",
+          "type": "string"
+        },
+        "target_stop_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Target Stop Id",
+          "type": "string"
+        },
+        "target_time_begin": {
+          "format": "date-time",
+          "title": "Target Time Begin",
+          "type": "string"
+        },
+        "cur_dev_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cur Dev S"
+        },
+        "cur_dev_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cur Dev Source"
+        },
+        "cur_dev_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cur Dev Time"
+        },
+        "cur_dev_quality": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cur Dev Quality"
+        }
+      },
+      "required": [
+        "prediction_id",
+        "tr_id",
+        "target_stop_id",
+        "target_time_begin"
+      ],
+      "title": "PredictionTarget",
+      "type": "object"
+    },
+    "ScheduleVisit": {
+      "additionalProperties": false,
+      "properties": {
+        "schedule_version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Schedule Version",
+          "type": "string"
+        },
+        "stop_visit_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Stop Visit Id",
+          "type": "string"
+        },
+        "tr_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tr Id",
+          "type": "string"
+        },
+        "time_begin": {
+          "format": "date-time",
+          "title": "Time Begin",
+          "type": "string"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lat"
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lon"
+        },
+        "building_address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Building Address"
+        }
+      },
+      "required": [
+        "schedule_version",
+        "stop_visit_id",
+        "tr_id",
+        "time_begin"
+      ],
+      "title": "ScheduleVisit",
+      "type": "object"
+    },
+    "TelemetryEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "ndtp",
+            "replay",
+            "scenario"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "tr_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tr Id",
+          "type": "string"
+        },
+        "unit_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Unit Id",
+          "type": "string"
+        },
+        "event_time": {
+          "format": "date-time",
+          "title": "Event Time",
+          "type": "string"
+        },
+        "receive_time": {
+          "format": "date-time",
+          "title": "Receive Time",
+          "type": "string"
+        },
+        "ingested_at": {
+          "format": "date-time",
+          "title": "Ingested At",
+          "type": "string"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lat"
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lon"
+        },
+        "speed_kmh": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speed Kmh"
+        },
+        "heading_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heading Deg"
+        },
+        "location_valid": {
+          "title": "Location Valid",
+          "type": "boolean"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quality Flags",
+          "type": "array"
+        },
+        "source_identity": {
+          "additionalProperties": true,
+          "title": "Source Identity",
+          "type": "object"
+        }
+      },
+      "required": [
+        "run_id",
+        "event_id",
+        "source",
+        "tr_id",
+        "unit_id",
+        "event_time",
+        "receive_time",
+        "ingested_at",
+        "location_valid"
+      ],
+      "title": "TelemetryEvent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "as_of": {
+      "format": "date-time",
+      "title": "As Of",
+      "type": "string"
+    },
+    "schedule_version": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Schedule Version",
+      "type": "string"
+    },
+    "network_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Network Version"
+    },
+    "config_version": {
+      "default": "1",
+      "title": "Config Version",
+      "type": "string"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/PredictionTarget"
+      },
+      "title": "Targets",
+      "type": "array"
+    },
+    "telemetry": {
+      "items": {
+        "$ref": "#/$defs/TelemetryEvent"
+      },
+      "title": "Telemetry",
+      "type": "array"
+    },
+    "schedule_context": {
+      "items": {
+        "$ref": "#/$defs/ScheduleVisit"
+      },
+      "title": "Schedule Context",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_id",
+    "run_id",
+    "as_of",
+    "schedule_version",
+    "targets"
+  ],
+  "title": "PredictionBatch",
+  "type": "object"
+}

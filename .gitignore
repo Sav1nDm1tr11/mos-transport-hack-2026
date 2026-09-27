@@ -2,3 +2,13 @@
 
 # Local emulator image archive (too large for regular GitHub storage).
 /dataset/ndtp-telemetry-emulator.tar
+
+# Local runtime and generated data
+.venv/
+.runtime/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.env
+.coverage

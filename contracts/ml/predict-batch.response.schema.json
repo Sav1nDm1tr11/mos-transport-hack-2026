@@ -1,0 +1,190 @@
+{
+  "$defs": {
+    "PredictionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "prediction_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Prediction Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "insufficient_data",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "delay_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delay S"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quality Flags",
+          "type": "array"
+        },
+        "model_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Version"
+        },
+        "feature_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feature Version"
+        },
+        "late_probability": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Late Probability"
+        },
+        "late_threshold_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Late Threshold S"
+        },
+        "interval_lower_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval Lower S"
+        },
+        "interval_upper_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval Upper S"
+        },
+        "interval_coverage": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval Coverage"
+        }
+      },
+      "required": [
+        "prediction_id",
+        "status"
+      ],
+      "title": "PredictionResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "model_version": {
+      "title": "Model Version",
+      "type": "string"
+    },
+    "feature_version": {
+      "title": "Feature Version",
+      "type": "string"
+    },
+    "predictions": {
+      "items": {
+        "$ref": "#/$defs/PredictionResult"
+      },
+      "title": "Predictions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_id",
+    "schema_version",
+    "model_version",
+    "feature_version",
+    "predictions"
+  ],
+  "title": "BatchResponse",
+  "type": "object"
+}

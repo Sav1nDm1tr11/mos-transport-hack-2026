@@ -1,0 +1,29 @@
+name: moscow-transport
+services:
+  backend:
+    build:
+      context: ../..
+    environment:
+      TRANSPORT_API_TOKEN: ${TRANSPORT_API_TOKEN:?Set TRANSPORT_API_TOKEN}
+      TRANSPORT_DB_PATH: /data/transport.sqlite
+      TRANSPORT_NDTP_HOST: 0.0.0.0
+      TRANSPORT_NDTP_PORT: 9201
+      TRANSPORT_ML_URL: ${TRANSPORT_ML_URL:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:9201:9201"
+    volumes:
+      - transport-data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+  emulator:
+    image: ndtp-telemetry-emulator:1.0
+    platform: linux/amd64
+    profiles: [emulator]
+    ports:
+      - "127.0.0.1:18080:18080"
+    depends_on:
+      backend:
+        condition: service_healthy
+volumes:
+  transport-data:
