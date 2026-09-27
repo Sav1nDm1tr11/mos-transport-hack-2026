@@ -12,3 +12,4 @@ __pycache__/
 *.egg-info/
 .env
 .coverage
+artifacts/models/random_forest/checkpoints/random_forest_final.pkl
