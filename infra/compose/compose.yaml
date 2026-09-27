@@ -5,14 +5,19 @@ services:
       context: ../..
       dockerfile: services/ml-service/Dockerfile
     environment:
-      COLD_STRICT_MODEL_PATH: /models/cold_strict.pkl
-      COLD_PLUS_DEV_MODEL_PATH: /models/cold_plus_dev.pkl
-      ML_MODEL_VERSION: cold-rf-v1
-      ML_FEATURE_VERSION: cold-online-v1
+      COLD_STRICT_MODEL_PATH: /models/cold_start_rf/checkpoints/cold_strict.pkl
+      COLD_PLUS_DEV_MODEL_PATH: /models/cold_start_rf/checkpoints/cold_plus_dev.pkl
+      FULL_CATBOOST_MODEL_PATH: /models/catboost/checkpoints/catboost_final.cbm
+      FULL_CATBOOST_METADATA_PATH: /models/catboost/checkpoints/catboost_final_metadata.json
+      ML_MODEL_VERSION: hybrid-router-v1
+      ML_FEATURE_VERSION: hybrid-online-v1
+      FULL_HISTORY_MINUTES: ${FULL_HISTORY_MINUTES:-30}
+      FULL_MIN_SPAN_MINUTES: ${FULL_MIN_SPAN_MINUTES:-15}
+      FULL_MIN_OBSERVATIONS: ${FULL_MIN_OBSERVATIONS:-6}
     ports:
       - "127.0.0.1:8090:8090"
     volumes:
-      - ../../artifacts/models/cold_start_rf/checkpoints:/models:ro
+      - ../../artifacts/models:/models:ro
     restart: unless-stopped
 
   backend:

@@ -236,13 +236,17 @@ class ColdFeatureBuilder:
             ["tr_id", "available_time"]
         ).reset_index(drop=True)
 
-    def build(self, target: PredictionTarget, expected_features: list[str]) -> pd.DataFrame:
+    def build_row(self, target: PredictionTarget) -> dict[str, object]:
         row = self._base(target)
         self._add_latest_state(row, target)
         self._add_physics(row)
         self._add_schedule_path(row, target)
         self._add_cross_features(row)
         self._add_powers(row)
+        return row
+
+    def build(self, target: PredictionTarget, expected_features: list[str]) -> pd.DataFrame:
+        row = self.build_row(target)
 
         frame = pd.DataFrame([row])
         for feature in expected_features:

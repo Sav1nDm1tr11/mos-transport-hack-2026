@@ -1,28 +1,28 @@
 # services
 
-Самостоятельные серверные процессы платформы.
+Самостоятельные серверные процессы локального профиля.
 
-Статус: документированный каркас. Реализация и запуск пока отсутствуют.
+## Поток
 
-## Входы, выходы и зависимости
+```text
+NDTP -> backend/worker -> ml-service -> storage -> REST/SSE -> frontend
+```
 
-NDTP → gateway → Kafka → worker → PostgreSQL/Redis → backend → REST/SSE.
-
-## Границы ответственности
-
-Приём, обработка и пользовательский API имеют разные владельцы. ML-сервис поставляется отдельно и в каркас не входит.
+В целевой архитектуре gateway/worker/storage разделяются сильнее, но текущий профиль уже сохраняет внешнюю ML-границу.
 
 ## Состав
 
-- [backend](backend/README.md): API рабочего места оператора: доступ, чтение, действия, экспорт и SSE.
-- [processing-worker](processing-worker/README.md): Обработка телеметрии, состояния ТС, расписания, прогнозов и жизненного цикла ситуаций в одном процессе.
-- [telemetry-gateway](telemetry-gateway/README.md): Приём NDTP по TCP, разбор кадров и нормализация телеметрии.
+- [backend](backend/README.md) -- API рабочего места оператора, SSE и UI;
+- [processing-worker](processing-worker/README.md) -- состояние ТС, расписание, подготовка prediction batch и вызов ML;
+- [ml-service](ml-service/README.md) -- cold-start RF, optional full CatBoost и model routing;
+- [telemetry-gateway](telemetry-gateway/README.md) -- NDTP-разбор и нормализация.
 
-## Будущие проверки
+## ML-граница
 
-Совместимость событий, восстановление после отказов и отсутствие обхода проверок доступа.
+Worker передает immutable `PredictionBatch`; модельная предобработка и выбор конкретной модели остаются внутри `ml-service`. Браузер к ML-сервису напрямую не обращается.
 
 ## Связанные документы
 
 - [Карта проекта](../README.md)
-- [Техническое задание](../docs/superpowers/specs/2026-09-25-transport-delay-system-design.md)
+- [ML-модели и routing](../docs/development/ml-models.md)
+- [Архитектура](../ARCHITECTURE.md)

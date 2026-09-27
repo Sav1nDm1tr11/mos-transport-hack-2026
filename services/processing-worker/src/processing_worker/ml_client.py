@@ -538,8 +538,8 @@ class MLClient:
                     raise ValueError("model-info declares no interval support")
                 first_by_id[prediction_id] = parsed.model_copy(
                     update={
-                        "model_version": info.model_version,
-                        "feature_version": info.feature_version,
+                        "model_version": parsed.model_version or info.model_version,
+                        "feature_version": parsed.feature_version or info.feature_version,
                     }
                 )
             except (ValidationError, ValueError):

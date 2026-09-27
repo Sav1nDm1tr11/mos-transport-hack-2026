@@ -78,6 +78,25 @@
       },
       "title": "Reason Codes",
       "type": "array"
+    },
+    "available_modes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Available Modes",
+      "type": "array"
+    },
+    "routing_policy": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Routing Policy"
     }
   },
   "required": [

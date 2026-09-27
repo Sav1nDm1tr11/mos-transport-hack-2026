@@ -1,5 +1,38 @@
 # Подключение ML
 
+## Текущий production-профиль
+
+В репозитории есть отдельный FastAPI `services/ml-service`. Он загружает cold-start RF checkpoints и optional full CatBoost, а выбор режима делает внутри сервиса:
+
+```text
+FULL_CATBOOST  -- full checkpoint есть, cur_dev_s известен, истории достаточно
+COLD_PLUS_DEV  -- cur_dev_s известен, но full-контекста пока нет
+COLD_STRICT    -- cur_dev_s отсутствует
+```
+
+Локальный запуск из корня:
+
+```bash
+PYTHONPATH=services/ml-service/src:packages/contracts/src \
+COLD_STRICT_MODEL_PATH=artifacts/models/cold_start_rf/checkpoints/cold_strict.pkl \
+COLD_PLUS_DEV_MODEL_PATH=artifacts/models/cold_start_rf/checkpoints/cold_plus_dev.pkl \
+FULL_CATBOOST_MODEL_PATH=artifacts/models/catboost/checkpoints/catboost_final.cbm \
+python -m uvicorn ml_service.app:app --host 0.0.0.0 --port 8090
+```
+
+CatBoost optional -- без `.cbm` сервис остается готовым и работает на RF. Worker подключается через `TRANSPORT_ML_URL=http://127.0.0.1:8090`. Полное описание моделей, качества и routing: [ml-models.md](ml-models.md).
+
+Проверка:
+
+```bash
+curl http://127.0.0.1:8090/health/ready
+```
+
+UI получает прогнозы через обычный backend API; браузер напрямую к ML-сервису не обращается. В истории прогнозов и карточке ТС показываются версия модели и фактический режим (`FULL_CATBOOST`, `COLD_PLUS_DEV`, `COLD_STRICT`).
+
+> Текущий live worker пока не оценивает `cur_dev_s`, поэтому без внешнего источника реальные online-запросы будут идти через `COLD_STRICT`. `COLD_PLUS_DEV` и `FULL_CATBOOST` включатся автоматически после появления корректного `cur_dev_s` в `PredictionTarget`.
+
+## Контракт и preflight
 Из корня проекта после установки `pip install -e .`:
 
 ```sh

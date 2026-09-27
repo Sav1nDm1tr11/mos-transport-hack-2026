@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pickle
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,13 @@ from transport_contracts import PredictionTarget
 
 
 class ColdPredictor:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        model_version: str = "cold-rf-strong-v2",
+        feature_version: str = "cold-online-v2",
+    ) -> None:
         with path.open("rb") as file:
             checkpoint = pickle.load(file)
 
@@ -20,6 +27,22 @@ class ColdPredictor:
         self.target_mode = checkpoint.get("target_mode", "direct")
         self.clip_low = checkpoint.get("clip_low")
         self.clip_high = checkpoint.get("clip_high")
+        self.model_version = checkpoint.get("model_version", model_version)
+        self.feature_version = checkpoint.get("feature_version", feature_version)
+
+        saved_sklearn = checkpoint.get("sklearn_version")
+        if saved_sklearn is None:
+            saved_sklearn = checkpoint.get("versions", {}).get("sklearn")
+        if saved_sklearn is not None:
+            import sklearn
+
+            if sklearn.__version__ != saved_sklearn:
+                warnings.warn(
+                    "Cold-start checkpoint was saved with scikit-learn "
+                    f"{saved_sklearn}, current version is {sklearn.__version__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def predict(self, frame: pd.DataFrame, target: PredictionTarget) -> float:
         matrix = self.preprocessor.transform(frame[self.features])

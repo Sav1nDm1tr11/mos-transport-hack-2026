@@ -22,11 +22,13 @@ The client requires this exact metadata shape (unknown fields currently reject t
   "batch_independent": true,
   "supports_late_probability": false,
   "supports_intervals": false,
-  "reason_codes": ["too_few_points", "stale_telemetry"]
+  "reason_codes": ["FULL_CATBOOST", "COLD_PLUS_DEV", "COLD_STRICT"],
+  "available_modes": ["COLD_STRICT", "COLD_PLUS_DEV", "FULL_CATBOOST"],
+  "routing_policy": "full model when history is sufficient, otherwise cold-start"
 }
 ```
 
-`required_fields` accepts top-level contract names and paths under `target.`, `telemetry.`, and `schedule_context.`. Neighbor context is not part of schema v1, so `requires_neighbor_vehicles: true` is rejected. If `requires_network` is true, the request must carry a `network_version`. The worker rejects unsupported schema versions and oversized batches before inference. It checks `history_minutes`, `min_observations`, `max_age_seconds`, required fields, and `supports_missing_cur_dev_s` per target; insufficient targets receive `status: "insufficient_data"` while eligible sibling targets can still be inferred. When any target is sent for inference, the worker sends the original complete batch with the same request ID and serialized input; local insufficiency results override those target results in the returned list. This preserves identical request bytes for retry and avoids changing context boundaries for models where targets interact.
+`available_modes` and `routing_policy` are optional diagnostic fields for routed ML services. `required_fields` accepts top-level contract names and paths under `target.`, `telemetry.`, and `schedule_context.`. Neighbor context is not part of schema v1, so `requires_neighbor_vehicles: true` is rejected. If `requires_network` is true, the request must carry a `network_version`. The worker rejects unsupported schema versions and oversized batches before inference. It checks `history_minutes`, `min_observations`, `max_age_seconds`, required fields, and `supports_missing_cur_dev_s` per target; insufficient targets receive `status: "insufficient_data"` while eligible sibling targets can still be inferred. When any target is sent for inference, the worker sends the original complete batch with the same request ID and serialized input; local insufficiency results override those target results in the returned list. This preserves identical request bytes for retry and avoids changing context boundaries for models where targets interact.
 
 ## Request example
 
@@ -91,7 +93,7 @@ Invalid positions stay in telemetry with `lat` and `lon` cleared and `invalid_po
 
 ## Response example
 
-The envelope echoes request/schema IDs and the exact model and feature versions returned by model-info. There is one prediction result per target. `delay_s` is populated only for `status: "ok"`. Probability and interval groups are each all-present or all-null.
+The envelope echoes request/schema IDs and the router/service model and feature versions returned by model-info. There is one prediction result per target. A routed service may additionally set `model_version` and `feature_version` on each result to identify the concrete submodel; the client preserves those values and falls back to the envelope versions when they are omitted. `delay_s` is populated only for `status: "ok"`. Probability and interval groups are each all-present or all-null.
 
 ```json
 {

@@ -453,3 +453,37 @@ async def test_oversized_dependent_batch_never_calls_inference():
             await client.predict(make_batch())
     finally:
         await client.close()
+
+@pytest.mark.asyncio
+async def test_routed_service_preserves_per_result_model_versions():
+    async def predict(request):
+        return response(
+            request,
+            [
+                {
+                    "prediction_id": "p1",
+                    "status": "ok",
+                    "delay_s": 5,
+                    "model_version": "cold-rf-strict-v2",
+                    "feature_version": "cold-online-v2",
+                    "reason_codes": ["COLD_STRICT"],
+                },
+                {
+                    "prediction_id": "p2",
+                    "status": "ok",
+                    "delay_s": 7,
+                    "model_version": "catboost-optuna-v1",
+                    "feature_version": "full-online-v1",
+                    "reason_codes": ["FULL_CATBOOST"],
+                },
+            ],
+        )
+
+    client = MLClient("http://ml", transport=httpx.MockTransport(handlers(predict)))
+    results = await client.predict(make_batch())
+    await client.close()
+
+    assert results[0].model_version == "cold-rf-strict-v2"
+    assert results[0].feature_version == "cold-online-v2"
+    assert results[1].model_version == "catboost-optuna-v1"
+    assert results[1].feature_version == "full-online-v1"

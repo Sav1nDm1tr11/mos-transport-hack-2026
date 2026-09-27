@@ -305,3 +305,5 @@ class ModelInfo(ContractModel):
     supports_late_probability: bool
     supports_intervals: bool
     reason_codes: list[str]
+    available_modes: list[str] = Field(default_factory=list)
+    routing_policy: str | None = None

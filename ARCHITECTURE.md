@@ -178,8 +178,10 @@ ML-сервис получает вход через API и не читает и
 ```json
 {
   "request_id": "batch-00042",
+  "run_id": "live",
   "schema_version": "1",
   "as_of": "2026-01-06T09:00:00Z",
+  "schedule_version": "default",
   "network_version": "network-v1",
   "targets": [
     {
@@ -189,7 +191,7 @@ ML-сервис получает вход через API и не читает и
       "target_time_begin": "2026-01-06T09:12:00Z",
       "cur_dev_s": 45,
       "cur_dev_source": "stop_matching",
-      "cur_dev_observed_at": "2026-01-06T08:57:00Z"
+      "cur_dev_time": "2026-01-06T08:57:00Z"
     }
   ],
   "telemetry": [
@@ -206,9 +208,10 @@ ML-сервис получает вход через API и не читает и
   ],
   "schedule_context": [
     {
+      "schedule_version": "default",
       "tr_id": "129964",
       "stop_visit_id": "53700336299",
-      "planned_arrival": "2026-01-06T09:12:00Z",
+      "time_begin": "2026-01-06T09:12:00Z",
       "lat": 55.76,
       "lon": 37.62
     }
@@ -269,6 +272,30 @@ ML-команда и платформенная команда фиксирую�
 7. Версию схемы, правила совместимости и способ доставки артефактов модели.
 
 Поставка ML-команды: Docker-образ, модель с предобработкой, описание API, пример запроса и ожидаемого ответа. Пока модель не готова, сервис-заглушка реализует тот же контракт и возвращает `cur_dev_s` с обозначением резервного режима.
+
+
+### 7.5. Текущая реализация model routing
+
+Локальный профиль реализует один внешний ML API, внутри которого выбирается модель по доступному контексту:
+
+```text
+PredictionBatch
+      |
+      +-- full CatBoost загружен + cur_dev_s известен + истории достаточно
+      |       -> FULL_CATBOOST
+      |
+      +-- cur_dev_s известен
+      |       -> COLD_PLUS_DEV
+      |
+      +-- иначе
+              -> COLD_STRICT
+```
+
+Cold-start модели -- Random Forest на snapshot, schedule и физических признаках. Full CatBoost использует накопленную телеметрию и расширенные rolling/spatial признаки. Конкретная модель не является частью контракта backend: каждый результат возвращает `model_version`, `feature_version` и reason code выбранного режима.
+
+Full CatBoost optional. Если checkpoint отсутствует или не загрузился, сервис остается работоспособным на cold-start RF. Порог перехода на full-модель задается параметрами истории сервиса.
+
+Текущий full feature builder восстанавливает только признаки, доступные из `PredictionBatch`. Offline-only поля и PCA без сохраненного fitted preprocessing остаются missing; поэтому перед production-фиксацией full-модели требуется отдельная train-serving проверка или переобучение на полностью online-reconstructable признаках.
 
 ## 8. Хранение данных
 
