@@ -1,5 +1,20 @@
 name: moscow-transport
 services:
+  ml-service:
+    build:
+      context: ../..
+      dockerfile: services/ml-service/Dockerfile
+    environment:
+      COLD_STRICT_MODEL_PATH: /models/cold_strict.pkl
+      COLD_PLUS_DEV_MODEL_PATH: /models/cold_plus_dev.pkl
+      ML_MODEL_VERSION: cold-rf-v1
+      ML_FEATURE_VERSION: cold-online-v1
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ../../artifacts/models/cold_start_rf/checkpoints:/models:ro
+    restart: unless-stopped
+
   backend:
     build:
       context: ../..
@@ -8,7 +23,7 @@ services:
       TRANSPORT_DB_PATH: /data/transport.sqlite
       TRANSPORT_NDTP_HOST: 0.0.0.0
       TRANSPORT_NDTP_PORT: 9201
-      TRANSPORT_ML_URL: ${TRANSPORT_ML_URL:-}
+      TRANSPORT_ML_URL: ${TRANSPORT_ML_URL:-http://ml-service:8090}
     ports:
       - "127.0.0.1:8000:8000"
       - "127.0.0.1:9201:9201"

@@ -1,0 +1,13 @@
+FROM python:3.12-slim
+WORKDIR /app
+
+COPY services/ml-service/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY services/ml-service/src ./src
+COPY packages/contracts/src ./packages/contracts/src
+
+ENV PYTHONPATH=/app/src:/app/packages/contracts/src
+EXPOSE 8090
+
+CMD ["python", "-m", "uvicorn", "ml_service.app:app", "--host", "0.0.0.0", "--port", "8090", "--workers", "1"]

@@ -102,6 +102,11 @@ class Worker:
             for v in visits
         ]
         # Explicit source slice: no label imports, no future facts or mutable DB references.
+        schedule_context = self.store.schedule(
+            self.settings.schedule_version,
+            limit=20000,
+        )
+
         batch = PredictionBatch(
             request_id=rid,
             run_id=run,
@@ -109,7 +114,9 @@ class Worker:
             schedule_version=self.settings.schedule_version,
             targets=targets,
             telemetry=[TelemetryEvent.model_validate(e) for e in history],
-            schedule_context=[ScheduleVisit.model_validate(v) for v in visits],
+            schedule_context=[
+                ScheduleVisit.model_validate(v) for v in schedule_context
+            ],
         )
         self.store.save_batch(batch.model_dump(mode="json"))
         return rid
