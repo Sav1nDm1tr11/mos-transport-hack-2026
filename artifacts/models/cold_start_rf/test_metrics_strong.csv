@@ -1,0 +1,6 @@
+model,selected_for_service,test_mae
+plus_dev_direct,True,47.32195661175144
+strict_direct,True,47.548181157114726
+plus_dev_residual,False,51.08628691003226
+cur_dev_s,False,93.35977337110482
+global_median,False,101.20113314447592

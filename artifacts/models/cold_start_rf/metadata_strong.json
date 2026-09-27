@@ -1,0 +1,13 @@
+{
+  "seed": 143,
+  "purge_minutes": 45,
+  "final_estimators": 2500,
+  "cold_plus_dev_study": "plus_dev_direct",
+  "cold_plus_dev_oof_mae": 43.91901762087474,
+  "cold_strict_oof_mae": 43.40025124319807,
+  "service_policy": {
+    "cur_dev_available": "cold_plus_dev",
+    "cur_dev_missing": "cold_strict",
+    "enough_history": "full_catboost"
+  }
+}

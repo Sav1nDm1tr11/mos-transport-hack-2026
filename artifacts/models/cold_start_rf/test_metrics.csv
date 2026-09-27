@@ -1,0 +1,5 @@
+model,test_mae
+cold_plus_dev,46.86942842372968
+cold_strict,51.051507148930284
+cur_dev_s,93.35977337110482
+global_median,101.20113314447592

@@ -1,0 +1,4 @@
+study,trials,complete,best_cv_mae
+strict_direct,70,59,43.471501989835424
+plus_dev_direct,70,66,43.85168250573474
+plus_dev_residual,70,63,45.544000446837686

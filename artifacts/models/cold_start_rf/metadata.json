@@ -1,0 +1,21 @@
+{
+  "seed": 143,
+  "purge_minutes": 45,
+  "best_cv_mae_plus_dev": 43.49567086859469,
+  "best_cv_mae_strict": 45.689762812784885,
+  "best_params": {
+    "max_depth": 32,
+    "min_samples_leaf": 1,
+    "min_samples_split": 3,
+    "max_features": "sqrt",
+    "bootstrap": false,
+    "synthetic_weight": 0.5,
+    "clip_q": 0.005,
+    "max_samples": null
+  },
+  "service_policy": {
+    "cur_dev_available": "cold_plus_dev",
+    "cur_dev_missing": "cold_strict",
+    "enough_history": "full_catboost"
+  }
+}
