@@ -4,6 +4,7 @@ COPY requirements.lock.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.lock.txt
 COPY services services
 COPY packages packages
+COPY apps/frontend/src apps/frontend/src
 RUN pip install --no-cache-dir --no-deps . && useradd --uid 10001 --create-home app && mkdir -p /data && chown app:app /data
 USER app
 ENV TRANSPORT_DB_PATH=/data/transport.sqlite TRANSPORT_NDTP_HOST=0.0.0.0

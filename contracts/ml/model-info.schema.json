@@ -1,0 +1,102 @@
+{
+  "additionalProperties": false,
+  "description": "Capabilities published by GET /v1/model-info.",
+  "properties": {
+    "model_version": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Model Version",
+      "type": "string"
+    },
+    "feature_version": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Feature Version",
+      "type": "string"
+    },
+    "supported_schema_versions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Supported Schema Versions",
+      "type": "array"
+    },
+    "history_minutes": {
+      "minimum": 0,
+      "title": "History Minutes",
+      "type": "integer"
+    },
+    "min_observations": {
+      "minimum": 0,
+      "title": "Min Observations",
+      "type": "integer"
+    },
+    "max_age_seconds": {
+      "minimum": 0,
+      "title": "Max Age Seconds",
+      "type": "integer"
+    },
+    "required_fields": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Fields",
+      "type": "array"
+    },
+    "supports_missing_cur_dev_s": {
+      "title": "Supports Missing Cur Dev S",
+      "type": "boolean"
+    },
+    "max_batch_size": {
+      "exclusiveMinimum": 0,
+      "title": "Max Batch Size",
+      "type": "integer"
+    },
+    "requires_neighbor_vehicles": {
+      "title": "Requires Neighbor Vehicles",
+      "type": "boolean"
+    },
+    "requires_network": {
+      "title": "Requires Network",
+      "type": "boolean"
+    },
+    "batch_independent": {
+      "title": "Batch Independent",
+      "type": "boolean"
+    },
+    "supports_late_probability": {
+      "title": "Supports Late Probability",
+      "type": "boolean"
+    },
+    "supports_intervals": {
+      "title": "Supports Intervals",
+      "type": "boolean"
+    },
+    "reason_codes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "model_version",
+    "feature_version",
+    "supported_schema_versions",
+    "history_minutes",
+    "min_observations",
+    "max_age_seconds",
+    "required_fields",
+    "supports_missing_cur_dev_s",
+    "max_batch_size",
+    "requires_neighbor_vehicles",
+    "requires_network",
+    "batch_independent",
+    "supports_late_probability",
+    "supports_intervals",
+    "reason_codes"
+  ],
+  "title": "ModelInfo",
+  "type": "object"
+}

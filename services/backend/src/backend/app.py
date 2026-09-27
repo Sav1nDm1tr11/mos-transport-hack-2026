@@ -10,11 +10,13 @@ import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from processing_worker.ml_client import MLClient
 from processing_worker.worker import Worker
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
@@ -92,7 +94,7 @@ def create_app(settings: Settings | None = None):
             if settings.db_path != ":memory:":
                 process_lock = open(settings.db_path + ".lock", "a")
                 fcntl.flock(process_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            ml = MLClient(settings.ml_url, timeout=settings.ml_timeout)
+            ml = MLClient(settings.ml_url, timeout=settings.ml_timeout, history_seconds=settings.history_seconds)
             worker = Worker(store, ml, settings)
             app.state.store = store
             app.state.worker = worker
@@ -445,4 +447,15 @@ def create_app(settings: Settings | None = None):
         )
 
     app.include_router(router)
+    # Local checkout and Docker both serve the same dependency-free UI.
+    frontend = Path(__file__).resolve().parents[4] / "apps" / "frontend" / "src"
+    if not frontend.is_dir():
+        frontend = Path.cwd() / "apps" / "frontend" / "src"
+    if frontend.is_dir():
+        app.mount("/ui", StaticFiles(directory=frontend), name="dashboard-ui")
+
+        @app.get("/", include_in_schema=False)
+        async def dashboard_page():
+            return FileResponse(frontend / "index.html", headers={"Cache-Control": "no-store"})
+
     return app

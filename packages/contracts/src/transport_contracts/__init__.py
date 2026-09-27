@@ -2,6 +2,7 @@
 
 from .models import (
     BatchResponse,
+    ModelInfo,
     PredictionBatch,
     PredictionResult,
     PredictionTarget,
@@ -11,6 +12,7 @@ from .models import (
 
 __all__ = [
     "BatchResponse",
+    "ModelInfo",
     "PredictionBatch",
     "PredictionResult",
     "PredictionTarget",

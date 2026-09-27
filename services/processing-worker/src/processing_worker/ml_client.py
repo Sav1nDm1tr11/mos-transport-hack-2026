@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections import Counter
 from datetime import timedelta
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from transport_contracts import BatchResponse, PredictionBatch, PredictionResult
+from pydantic import ValidationError
+from transport_contracts import (
+    BatchResponse,
+    ModelInfo,
+    PredictionBatch,
+    PredictionResult,
+)
 
 
 class MLClientError(RuntimeError):
@@ -17,26 +23,6 @@ class MLClientError(RuntimeError):
     def __init__(self, message: str, reject_batch: bool = False) -> None:
         super().__init__(message)
         self.reject_batch = reject_batch
-
-
-class _ModelInfo(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    model_version: str
-    feature_version: str
-    supported_schema_versions: list[str]
-    history_minutes: int = Field(ge=0)
-    min_observations: int = Field(ge=0)
-    max_age_seconds: int = Field(ge=0)
-    required_fields: list[str]
-    supports_missing_cur_dev_s: bool
-    max_batch_size: int = Field(gt=0)
-    requires_neighbor_vehicles: bool
-    requires_network: bool
-    batch_independent: bool
-    supports_late_probability: bool
-    supports_intervals: bool
-    reason_codes: list[str]
 
 
 class MLClient:
@@ -61,11 +47,15 @@ class MLClient:
         base_url: str | None,
         timeout: float = 8,
         transport: httpx.AsyncBaseTransport | None = None,
+        history_seconds: int | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         self.base_url = base_url.rstrip("/") if base_url else None
         self.timeout = timeout
+        if history_seconds is not None and history_seconds < 0:
+            raise ValueError("history_seconds must be nonnegative")
+        self.history_seconds = history_seconds
         self._transport = transport
         self._http: httpx.AsyncClient | None = None
 
@@ -97,13 +87,30 @@ class MLClient:
             return self._target_errors(batch, "ml_disabled", "ML client is disabled")
 
         try:
-            info = await self._check_ready_and_info()
+            info = await self.check()
         except (httpx.HTTPError, ValueError, ValidationError, MLClientError) as exc:
             if isinstance(exc, MLClientError) and exc.reject_batch:
                 raise
             return self._target_errors(batch, "ml_unavailable", str(exc))
 
         self._validate_compatibility(batch, info)
+        if len(batch.targets) > info.max_batch_size:
+            results = []
+            for offset in range(0, len(batch.targets), info.max_batch_size):
+                request_id = hashlib.sha256(
+                    f"{batch.request_id}:{info.model_version}:{info.feature_version}:{info.max_batch_size}:{offset}".encode()
+                ).hexdigest()
+                part = batch.model_copy(
+                    update={
+                        "request_id": request_id,
+                        "targets": batch.targets[offset : offset + info.max_batch_size],
+                    }
+                )
+                results.extend(await self._infer(part, info))
+            return results
+        return await self._infer(batch, info)
+
+    async def _infer(self, batch: PredictionBatch, info: ModelInfo):
         locally_insufficient = self._insufficient_targets(batch, info)
         eligible_targets = [
             target
@@ -249,7 +256,30 @@ class MLClient:
         by_id.update(local_results)
         return [by_id[target.prediction_id] for target in batch.targets]
 
-    async def _check_ready_and_info(self) -> _ModelInfo:
+    async def check(self) -> ModelInfo:
+        """Bounded readiness and configured history compatibility check."""
+        if self.base_url is None:
+            raise MLClientError("ML client is disabled")
+        info = await asyncio.wait_for(self._check_ready_and_info(), timeout=20)
+        if (
+            self.history_seconds is not None
+            and info.history_minutes * 60 > self.history_seconds
+        ):
+            raise MLClientError(
+                "configured history is shorter than model history", reject_batch=True
+            )
+        return info
+
+    def validate_compatibility(self, batch: PredictionBatch, info: ModelInfo) -> None:
+        self._validate_compatibility(batch, info)
+
+    def inspect_batch(
+        self, batch: PredictionBatch, info: ModelInfo
+    ) -> dict[str, list[str]]:
+        self.validate_compatibility(batch, info)
+        return self._insufficient_targets(batch, info)
+
+    async def _check_ready_and_info(self) -> ModelInfo:
         ready = await self._bounded_request(
             "GET", "/health/ready", maximum=self.MAX_METADATA_BYTES
         )
@@ -274,7 +304,7 @@ class MLClient:
                 f"ML model-info failed with HTTP {response.status_code}"
             )
         try:
-            info = _ModelInfo.model_validate(response.json())
+            info = ModelInfo.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
             raise MLClientError(
                 f"ML model-info is malformed: {exc}", reject_batch=True
@@ -282,13 +312,13 @@ class MLClient:
         return info
 
     @staticmethod
-    def _validate_compatibility(batch: PredictionBatch, info: _ModelInfo) -> None:
+    def _validate_compatibility(batch: PredictionBatch, info: ModelInfo) -> None:
         if batch.schema_version not in info.supported_schema_versions:
             raise MLClientError(
                 f"ML model does not support schema_version {batch.schema_version}",
                 reject_batch=True,
             )
-        if len(batch.targets) > info.max_batch_size:
+        if len(batch.targets) > info.max_batch_size and not info.batch_independent:
             raise MLClientError(
                 f"batch has {len(batch.targets)} targets; ML maximum is {info.max_batch_size}",
                 reject_batch=True,
@@ -343,7 +373,7 @@ class MLClient:
 
     @staticmethod
     def _insufficient_targets(
-        batch: PredictionBatch, info: _ModelInfo
+        batch: PredictionBatch, info: ModelInfo
     ) -> dict[str, list[str]]:
         """Apply the model-declared context limits to each target independently."""
         insufficient: dict[str, list[str]] = {}
@@ -428,7 +458,7 @@ class MLClient:
         self,
         batch: PredictionBatch,
         response: httpx.Response,
-        info: _ModelInfo,
+        info: ModelInfo,
     ) -> list[PredictionResult]:
         try:
             payload = response.json()

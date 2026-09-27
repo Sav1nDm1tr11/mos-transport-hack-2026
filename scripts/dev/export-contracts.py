@@ -5,10 +5,16 @@ from pathlib import Path
 
 from backend.app import create_app
 from backend.config import Settings
-from transport_contracts import BatchResponse, PredictionBatch, TelemetryEvent
+from transport_contracts import (
+    BatchResponse,
+    ModelInfo,
+    PredictionBatch,
+    TelemetryEvent,
+)
 
 root = Path(__file__).resolve().parents[2]
 for relative, schema in (
+    ("contracts/ml/model-info.schema.json", ModelInfo.model_json_schema()),
     (
         "contracts/http/openapi.json",
         create_app(Settings(api_token="schema-generation-only")).openapi(),

@@ -362,3 +362,52 @@ async def test_response_body_is_bounded_before_json_parsing():
     with pytest.raises(MLClientError, match="size limit"):
         await client.predict(make_batch())
     await client.close()
+
+
+async def test_public_check_rejects_short_history_before_inference():
+    async def unexpected(request):
+        pytest.fail("inference must not run")
+
+    client = MLClient(
+        "http://ml",
+        history_seconds=60,
+        transport=httpx.MockTransport(handlers(unexpected)),
+    )
+    try:
+        with pytest.raises(MLClientError, match="history"):
+            await client.check()
+    finally:
+        await client.close()
+
+
+async def test_independent_split_is_deterministic_and_preserves_context():
+    bodies = []
+
+    async def predict(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        return response(
+            request,
+            [
+                dict(prediction_id=t["prediction_id"], status="ok", delay_s=0.0)
+                for t in body["targets"]
+            ],
+            request_id=body["request_id"],
+        )
+
+    client = MLClient(
+        "http://ml",
+        transport=httpx.MockTransport(
+            handlers(predict, info=model_info(max_batch_size=1))
+        ),
+    )
+    try:
+        first = await client.predict(make_batch())
+        second = await client.predict(make_batch())
+    finally:
+        await client.close()
+    assert [r.prediction_id for r in first] == ["p1", "p2"]
+    assert first == second
+    assert bodies[:2] == bodies[2:]
+    assert bodies[0]["request_id"] != bodies[1]["request_id"]
+    assert all(b["schedule_version"] == "sched-1" for b in bodies)

@@ -285,3 +285,23 @@ class BatchResponse(ContractModel):
     model_version: str
     feature_version: str
     predictions: list[PredictionResult]
+
+
+class ModelInfo(ContractModel):
+    """Capabilities published by GET /v1/model-info."""
+
+    model_version: Identifier
+    feature_version: Identifier
+    supported_schema_versions: list[str]
+    history_minutes: int = Field(ge=0)
+    min_observations: int = Field(ge=0)
+    max_age_seconds: int = Field(ge=0)
+    required_fields: list[str]
+    supports_missing_cur_dev_s: bool
+    max_batch_size: int = Field(gt=0)
+    requires_neighbor_vehicles: bool
+    requires_network: bool
+    batch_independent: bool
+    supports_late_probability: bool
+    supports_intervals: bool
+    reason_codes: list[str]
