@@ -138,6 +138,19 @@ def main():
                     subprocess.run(
                         [
                             os.environ.get("NODE", "node"),
+                            "apps/frontend/tests/ml-browser.cjs",
+                        ],
+                        cwd=ROOT,
+                        env=dict(
+                            env,
+                            TEST_BASE_URL="http://127.0.0.1:8010",
+                            TEST_API_TOKEN=token,
+                        ),
+                        check=True,
+                    )
+                    subprocess.run(
+                        [
+                            os.environ.get("NODE", "node"),
                             "apps/frontend/tests/browser.cjs",
                         ],
                         cwd=ROOT,

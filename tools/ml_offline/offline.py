@@ -62,6 +62,39 @@ def save(path, value):
     temp.replace(path)
 
 
+def identity_for(manifest, sample_id):
+    return hashlib.sha256(
+        (json.dumps(manifest, sort_keys=True) + sample_id).encode()
+    ).hexdigest()
+
+
+def checkpoint(output, name, manifest):
+    data = json.loads((Path(output) / "results" / name).read_text())
+    batch = PredictionBatch.model_validate_json(
+        (Path(output) / "snapshots" / name).read_bytes()
+    )
+    result = PredictionResult.model_validate(data["result"])
+    expected = identity_for(manifest, data["sample_id"])
+    if (
+        data["request_id"] != expected
+        or batch.request_id != expected
+        or result.prediction_id != data["sample_id"]
+        or len(batch.targets) != 1
+        or batch.targets[0].prediction_id != result.prediction_id
+    ):
+        raise ValueError("checkpoint experiment correlation mismatch")
+    if (
+        result.status == "ok"
+        and "model_version" in manifest
+        and (
+            result.model_version != manifest["model_version"]
+            or result.feature_version != manifest["feature_version"]
+        )
+    ):
+        raise ValueError("checkpoint model version mismatch")
+    return data, result
+
+
 async def replay(
     *,
     points,
@@ -89,6 +122,11 @@ async def replay(
         timezone=timezone,
         history_minutes=history_minutes,
     )
+    info = await client.check() if hasattr(client, "check") else None
+    if info is not None:
+        manifest.update(
+            model_version=info.model_version, feature_version=info.feature_version
+        )
     save(output / "manifest.json", manifest)
     for name in ("snapshots", "results"):
         (output / name).mkdir(exist_ok=True)
@@ -169,7 +207,7 @@ async def replay(
                 name = f"{idx:012d}.json"
                 result_path = output / "results" / name
                 if result_path.exists():
-                    stored = json.loads(result_path.read_text())
+                    stored, _ = checkpoint(output, name, manifest)
                     if stored["sample_id"] != sample_id:
                         raise ValueError("checkpoint mismatch")
                     PredictionResult.model_validate(stored["result"])
@@ -205,9 +243,7 @@ async def replay(
                 ]
                 if len(events) > 100000:
                     raise ValueError("history slice exceeds limit")
-                identity = hashlib.sha256(
-                    (json.dumps(manifest, sort_keys=True) + sample_id).encode()
-                ).hexdigest()
+                identity = identity_for(manifest, sample_id)
                 batch = PredictionBatch(
                     request_id=identity,
                     run_id="offline",
@@ -231,6 +267,17 @@ async def replay(
                 results = await client.predict(batch)
                 if len(results) != 1 or results[0].prediction_id != sample_id:
                     raise ValueError("result correlation mismatch")
+                if (
+                    info is not None
+                    and results[0].status == "ok"
+                    and (
+                        results[0].model_version != info.model_version
+                        or results[0].feature_version != info.feature_version
+                    )
+                ):
+                    raise ValueError(
+                        "model changed during replay; start a new experiment"
+                    )
                 save(
                     result_path,
                     dict(
@@ -248,9 +295,9 @@ async def replay(
 
 def results(output):
     values = {}
+    manifest = json.loads((Path(output) / "manifest.json").read_text())
     for path in sorted((Path(output) / "results").glob("*.json")):
-        data = json.loads(path.read_text())
-        result = PredictionResult.model_validate(data["result"])
+        data, result = checkpoint(output, path.name, manifest)
         key = data["sample_id"]
         if key in values:
             raise ValueError("duplicate result")

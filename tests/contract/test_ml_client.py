@@ -434,3 +434,22 @@ async def test_metadata_check_rejects_unsupported_capabilities_without_batch(upd
             await client.check()
     finally:
         await client.close()
+
+
+async def test_oversized_dependent_batch_never_calls_inference():
+    async def unexpected(request):
+        pytest.fail("dependent batch cannot be split")
+
+    client = MLClient(
+        "http://ml",
+        transport=httpx.MockTransport(
+            handlers(
+                unexpected, info=model_info(max_batch_size=1, batch_independent=False)
+            )
+        ),
+    )
+    try:
+        with pytest.raises(MLClientError, match="maximum"):
+            await client.predict(make_batch())
+    finally:
+        await client.close()

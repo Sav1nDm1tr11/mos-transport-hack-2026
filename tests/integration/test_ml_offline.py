@@ -217,3 +217,75 @@ async def test_submission_refuses_missing_duplicate_error(source, tmp_path):
     write(template, ["sample_id", "prediction"], [["p2", 9]], ";")
     with pytest.raises(ValueError, match="non-ok"):
         offline.submission(template, out, tmp_path / "submission.csv")
+
+
+async def test_changed_sources_cannot_resume_existing_experiment(source, tmp_path):
+    args = dict(
+        points=source[0],
+        traffic=source[1],
+        schedule=source[2],
+        output=tmp_path / "out",
+        timezone="UTC",
+        client=Client(),
+        max_steps=1,
+    )
+    await offline.replay(**args)
+    with source[1].open("a") as stream:
+        stream.write("\n")
+    with pytest.raises(ValueError, match="immutable"):
+        await offline.replay(**args)
+
+
+async def test_model_version_change_cannot_mix_results(source, tmp_path):
+    class VersionedClient(Client):
+        version = "v1"
+
+        async def predict(self, batch):
+            values = await super().predict(batch)
+            return [
+                v.model_copy(
+                    update={"model_version": self.version, "feature_version": "f1"}
+                )
+                for v in values
+            ]
+
+        async def check(self):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(model_version=self.version, feature_version="f1")
+
+    client = VersionedClient()
+    args = dict(
+        points=source[0],
+        traffic=source[1],
+        schedule=source[2],
+        output=tmp_path / "out",
+        timezone="UTC",
+        client=client,
+        max_steps=1,
+    )
+    await offline.replay(**args)
+    client.version = "v2"
+    with pytest.raises(ValueError, match="immutable"):
+        await offline.replay(**args)
+
+
+async def test_resume_and_export_reject_foreign_checkpoint(source, tmp_path):
+    args = dict(
+        points=source[0],
+        traffic=source[1],
+        schedule=source[2],
+        output=tmp_path / "out",
+        timezone="UTC",
+        client=Client(),
+        max_steps=1,
+    )
+    await offline.replay(**args)
+    result_path = tmp_path / "out/results/000000000000.json"
+    data = json.loads(result_path.read_text())
+    data["request_id"] = "another-experiment"
+    result_path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="correlation"):
+        await offline.replay(**args)
+    with pytest.raises(ValueError, match="correlation"):
+        offline.results(tmp_path / "out")

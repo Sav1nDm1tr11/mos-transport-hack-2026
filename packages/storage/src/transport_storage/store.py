@@ -388,6 +388,7 @@ class Store:
                     "as_of": batch["as_of"],
                     "request_id": batch["request_id"],
                     "run_id": batch["run_id"],
+                    "schedule_version": batch.get("schedule_version"),
                     "mode": "model" if result["status"] == "ok" else "unavailable",
                 }
                 db.execute(
@@ -522,6 +523,7 @@ class Store:
     def dashboard(self, run_id, limit, schedule_version, as_of):
         with self.lock:
             data = self.snapshot(run_id, limit)
+            data["schedule_version"] = schedule_version
             data["coverage"] = self.coverage(run_id, schedule_version, as_of)
             data["prediction_cycles"] = self.cycles(run_id, 10)
             data["prediction_backlog"] = self.db.execute(
