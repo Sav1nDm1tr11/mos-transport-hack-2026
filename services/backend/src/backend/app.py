@@ -79,6 +79,11 @@ class Cycle(BaseModel):
     as_of: AwareDatetime | None = None
 
 
+class ReplayClock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    as_of: AwareDatetime
+
+
 Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0, le=1000000)]
 
@@ -89,6 +94,10 @@ def create_app(settings: Settings | None = None):
     @asynccontextmanager
     async def lifespan(app):
         store = Store(settings.db_path)
+        if settings.clock_mode == "replay" and store.run_clock(settings.run_id) is None:
+            latest = store.latest_telemetry_time(settings.run_id)
+            if latest is not None:
+                store.set_run_clock(settings.run_id, latest)
         process_lock = None
         try:
             if settings.db_path != ":memory:":
@@ -238,6 +247,13 @@ def create_app(settings: Settings | None = None):
 
     router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth)])
 
+    async def effective_time(request: Request, run_id: str) -> datetime:
+        if settings.clock_mode == "replay":
+            raw = await asyncio.to_thread(request.app.state.store.run_clock, run_id)
+            if raw is not None:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
+        return datetime.now(UTC)
+
     @app.get("/api/v1/health/live")
     async def live():
         return {"status": "live"}
@@ -274,7 +290,10 @@ def create_app(settings: Settings | None = None):
         bound = await asyncio.to_thread(store.resolve_device, event.unit_id)
         if bound != event.tr_id:
             raise HTTPException(422, "unknown_or_mismatched_device")
-        if event.event_time > datetime.now(UTC) + timedelta(seconds=60):
+        if (
+            event.source != "replay"
+            and event.event_time > datetime.now(UTC) + timedelta(seconds=60)
+        ):
             raise HTTPException(422, "future_event")
         # Ingested-at is a server fact, not controlled by callers.
         data = event.model_dump(mode="json")
@@ -315,18 +334,24 @@ def create_app(settings: Settings | None = None):
         limit: Limit = 50,
         offset: Offset = 0,
     ):
-        return {
-            "items": await asyncio.to_thread(
-                request.app.state.store.vehicles, run_id, limit, offset
-            ),
-            "limit": limit,
-            "offset": offset,
-        }
+        store = request.app.state.store
+        clock = await effective_time(request, run_id)
+        if settings.clock_mode == "replay":
+            items = await asyncio.to_thread(
+                store.vehicles_at, run_id, clock, limit, offset
+            )
+        else:
+            items = await asyncio.to_thread(store.vehicles, run_id, limit, offset)
+        return {"items": items, "limit": limit, "offset": offset}
 
     @router.get("/vehicles/{tr_id}")
     async def vehicle(tr_id: str, request: Request, run_id: str = settings.run_id):
         store = request.app.state.store
-        state = await asyncio.to_thread(store.vehicle, run_id, tr_id)
+        clock = await effective_time(request, run_id)
+        if settings.clock_mode == "replay":
+            state = await asyncio.to_thread(store.vehicle_at, run_id, tr_id, clock)
+        else:
+            state = await asyncio.to_thread(store.vehicle, run_id, tr_id)
         if state is None:
             raise HTTPException(404, "vehicle_not_found")
         return {
@@ -335,8 +360,15 @@ def create_app(settings: Settings | None = None):
                 store.schedule, settings.schedule_version, tr_id, 200
             ),
             "predictions": await asyncio.to_thread(
-                store.predictions, run_id, tr_id, 10
+                store.predictions,
+                run_id,
+                tr_id,
+                10,
+                0,
+                clock if settings.clock_mode == "replay" else None,
             ),
+            "server_time": clock,
+            "clock_mode": settings.clock_mode,
         }
 
     @router.get("/telemetry")
@@ -347,13 +379,14 @@ def create_app(settings: Settings | None = None):
         limit: Limit = 50,
         offset: Offset = 0,
     ):
+        clock = await effective_time(request, run_id)
         return {
             "items": await asyncio.to_thread(
                 request.app.state.store.telemetry,
                 run_id,
                 tr_id,
                 limit,
-                None,
+                clock if settings.clock_mode == "replay" else None,
                 None,
                 offset,
             )
@@ -363,16 +396,21 @@ def create_app(settings: Settings | None = None):
     async def snapshot(
         request: Request, run_id: str = settings.run_id, limit: Limit = 50
     ):
+        wall_time = datetime.now(UTC)
+        clock = await effective_time(request, run_id)
         data = await asyncio.to_thread(
             request.app.state.store.dashboard,
             run_id,
             limit,
             settings.schedule_version,
-            datetime.now(UTC),
+            clock,
+            settings.clock_mode == "replay",
         )
         return {
             **data,
-            "server_time": datetime.now(UTC),
+            "server_time": clock,
+            "wall_time": wall_time,
+            "clock_mode": settings.clock_mode,
             "profile": "local",
             "ml": "configured" if settings.ml_url else "disabled",
         }
@@ -381,9 +419,13 @@ def create_app(settings: Settings | None = None):
     async def cycle_history(
         request: Request, run_id: str = settings.run_id, limit: Limit = 50
     ):
+        clock = await effective_time(request, run_id)
         return {
             "items": await asyncio.to_thread(
-                request.app.state.store.cycles, run_id, limit
+                request.app.state.store.cycles,
+                run_id,
+                limit,
+                clock if settings.clock_mode == "replay" else None,
             )
         }
 
@@ -422,16 +464,43 @@ def create_app(settings: Settings | None = None):
         limit: Limit = 50,
         offset: Offset = 0,
     ):
+        clock = await effective_time(request, run_id)
         return {
             "items": await asyncio.to_thread(
-                request.app.state.store.predictions, run_id, tr_id, limit, offset
+                request.app.state.store.predictions,
+                run_id,
+                tr_id,
+                limit,
+                offset,
+                clock if settings.clock_mode == "replay" else None,
             )
         }
 
+    @router.put("/replay-clock")
+    async def replay_clock(
+        body: ReplayClock,
+        request: Request,
+        run_id: str = settings.run_id,
+    ):
+        if settings.clock_mode != "replay":
+            raise HTTPException(409, "replay_clock_disabled")
+        value = await asyncio.to_thread(
+            request.app.state.store.set_run_clock, run_id, body.as_of
+        )
+        return {"run_id": run_id, "as_of": value}
+
     @router.post("/prediction-cycles", status_code=202)
     async def cycle(body: Cycle, request: Request):
-        if body.as_of and body.as_of > datetime.now(UTC) + timedelta(seconds=5):
+        if (
+            settings.clock_mode != "replay"
+            and body.as_of
+            and body.as_of > datetime.now(UTC) + timedelta(seconds=5)
+        ):
             raise HTTPException(422, "future_cycle")
+        if settings.clock_mode == "replay" and body.as_of is not None:
+            await asyncio.to_thread(
+                request.app.state.store.set_run_clock, settings.run_id, body.as_of
+            )
         rid = await request.app.state.worker.prepare(body.as_of)
         return {"request_id": rid, "status": "queued" if rid else "no_target"}
 

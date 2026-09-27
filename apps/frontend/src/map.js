@@ -1,7 +1,7 @@
 import {project,unproject,freshness} from './model.js';
 export class TransitMap {
   constructor(el,onSelect) {
-    this.el=el;this.onSelect=onSelect;this.center=[37.62,55.755];this.zoom=11;this.vehicles=[];this.selected=null;this.tiles=new Map();
+    this.el=el;this.onSelect=onSelect;this.center=[37.62,55.755];this.zoom=11;this.vehicles=[];this.selected=null;this.now=Date.now();this.tiles=new Map();
     el.innerHTML='<div class="tiles"></div><div class="markers"></div><div class="map-empty">Нет координат в выбранной выборке</div><div class="map-note">Подложка загружается…</div>';
     this.tileLayer=el.querySelector('.tiles');this.markerLayer=el.querySelector('.markers');
     window.addEventListener('online',()=>{for(const [key,tile] of this.tiles)if(tile.dataset.state==='error'){tile.remove();this.tiles.delete(key);}this.render();});
@@ -17,7 +17,7 @@ export class TransitMap {
     const loading=values.some(t=>t.dataset.state==='loading'),failed=values.some(t=>t.dataset.state==='error');
     this.el.querySelector('.map-note').textContent=loading?'Загрузка подложки…':failed?'Часть подложки недоступна · позиции по координатам':'© OpenStreetMap contributors';
   }
-  update(vehicles,selected){this.vehicles=vehicles;this.selected=selected;this.render();}
+  update(vehicles,selected,now=Date.now()){this.vehicles=vehicles;this.selected=selected;this.now=now;this.render();}
   step(n){this.zoom=Math.max(3,Math.min(18,this.zoom+n));this.render();}
   focus(v){if(v && Number.isFinite(v.lon)&&Number.isFinite(v.lat)){this.center=[v.lon,v.lat];this.zoom=14;}this.render();}
   reset(){this.center=[37.62,55.755];this.zoom=11;this.render();}
@@ -32,7 +32,7 @@ export class TransitMap {
     }
     for(const [key,tile]of this.tiles)if(!needed.has(key)){tile.remove();this.tiles.delete(key);}
     this.tileStatus();this.markerLayer.replaceChildren();let count=0;
-    for(const v of this.vehicles){if(!Number.isFinite(v.lat)||!Number.isFinite(v.lon))continue;count++;const [x,y]=project(v.lon,v.lat,this.zoom);const marker=document.createElement('button');marker.className=`map-marker ${freshness(v)&&v.location_valid?'':'stale'} ${v.tr_id===this.selected?'selected':''}`;marker.style.left=`${x-left}px`;marker.style.top=`${y-top}px`;marker.textContent='↗';marker.title=`ТС ${v.tr_id}${v.location_valid?'':' · последняя пригодная позиция'}`;marker.setAttribute('aria-label',`Показать ТС ${v.tr_id}`);marker.onclick=()=>this.onSelect(v.tr_id);this.markerLayer.append(marker);}
+    for(const v of this.vehicles){if(!Number.isFinite(v.lat)||!Number.isFinite(v.lon))continue;count++;const [x,y]=project(v.lon,v.lat,this.zoom);const marker=document.createElement('button');marker.className=`map-marker ${freshness(v,this.now)&&v.location_valid?'':'stale'} ${v.tr_id===this.selected?'selected':''}`;marker.style.left=`${x-left}px`;marker.style.top=`${y-top}px`;marker.textContent='↗';marker.title=`ТС ${v.tr_id}${v.location_valid?'':' · последняя пригодная позиция'}`;marker.setAttribute('aria-label',`Показать ТС ${v.tr_id}`);marker.onclick=()=>this.onSelect(v.tr_id);this.markerLayer.append(marker);}
     this.el.querySelector('.map-empty').hidden=count>0;
   }
 }

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,6 +16,7 @@ class Settings(BaseSettings):
     schedule_version: str = "default"
     ml_url: str | None = None
     prediction_interval: float = Field(default=30, ge=0.1)
+    clock_mode: Literal["wall", "replay"] = "wall"
     ml_timeout: float = Field(default=8, gt=0, le=8)
     max_pending: int = Field(default=10000, ge=1)
     history_seconds: int = Field(default=1800, ge=60, le=86400)

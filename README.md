@@ -9,7 +9,7 @@
 ## Исходные документы
 
 - [Архитектура и стек](ARCHITECTURE.md).
-- [Техническое задание](docs/superpowers/specs/2026-09-25-transport-delay-system-design.md) — проект требований к полной системе, включая ML-часть, которая исключена из этого каркаса.
+- [Техническое задание](docs/superpowers/specs/2026-09-25-transport-delay-system-design.md) -- требования к полной распределенной системе; локальный профиль уже включает ML-интеграцию, но не все инфраструктурные компоненты ТЗ.
 - [Исследование сценариев оператора](CJM_RESEARCH.md).
 - [Дизайн интерфейса](DESIGN.md).
 - [Описание датасета](dataset/README.md) и [спецификация NDTP](dataset/docs/Emulator-and-Telematic-Packets-Specification.md).

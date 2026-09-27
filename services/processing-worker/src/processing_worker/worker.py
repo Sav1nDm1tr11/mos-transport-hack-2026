@@ -48,9 +48,19 @@ class Worker:
             except TimeoutError:
                 pass
 
+    async def _clock(self):
+        if self.settings.clock_mode != "replay":
+            return datetime.now(UTC)
+        raw = await asyncio.to_thread(self.store.run_clock, self.settings.run_id)
+        if raw is None:
+            return None
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
+
     async def prepare(self, as_of=None):
         async with self.cycle_lock:
-            clock = as_of or datetime.now(UTC)
+            clock = as_of or await self._clock()
+            if clock is None:
+                return None
             try:
                 if await asyncio.to_thread(self.store.pending_batches):
                     raise Backpressure("prediction_cycle_pending")
@@ -186,6 +196,30 @@ class Worker:
                 pass
 
     async def schedule(self):
+        if self.settings.clock_mode == "replay":
+            last_clock = None
+            while not self.stopping.is_set():
+                try:
+                    await asyncio.wait_for(self.stopping.wait(), timeout=0.1)
+                    continue
+                except TimeoutError:
+                    pass
+                try:
+                    clock = await self._clock()
+                    if clock is None:
+                        continue
+                    if last_clock is None or clock < last_clock:
+                        last_clock = clock - timedelta(seconds=self.settings.prediction_interval)
+                    if (clock - last_clock).total_seconds() < self.settings.prediction_interval:
+                        continue
+                    await self.prepare(clock)
+                    last_clock = clock
+                except Backpressure:
+                    log.warning("prediction_cycle_skipped: backlog or input limit")
+                except Exception:
+                    log.exception("prediction_schedule_failure")
+            return
+
         while not self.stopping.is_set():
             try:
                 await asyncio.wait_for(

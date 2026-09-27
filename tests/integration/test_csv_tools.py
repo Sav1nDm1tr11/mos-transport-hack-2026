@@ -127,3 +127,72 @@ def test_invalid_coordinate_pair_is_null_with_quality_flag():
     assert event["lat"] is None and event["lon"] is None
     assert event["location_valid"] is False
     assert "invalid_position" in event["quality_flags"]
+
+
+def test_replay_orders_by_receive_time_and_preserves_delivery_lag(tmp_path):
+    path = tmp_path / "traffic.csv"
+    path.write_text(
+        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
+        "late,1,2026-01-06 00:00:00,2026-01-06 00:10:00,True,37.6,55.7\n"
+        "early,2,2026-01-06 00:05:00,2026-01-06 00:05:01,True,37.7,55.8\n",
+        encoding="utf-8",
+    )
+
+    events = list(replay.iter_traffic_events(path, "r", "UTC"))
+
+    assert [event["tr_id"] for event in events] == ["early", "late"]
+    assert events[0]["event_time"] == "2026-01-06T00:05:00+00:00"
+    assert events[0]["receive_time"] == "2026-01-06T00:05:01+00:00"
+    assert "receive_time_assumed" not in events[0]["quality_flags"]
+
+
+def test_replay_limit_applies_after_virtual_time_ordering(tmp_path):
+    path = tmp_path / "traffic.csv"
+    path.write_text(
+        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
+        "later,1,2026-01-06T00:10:00Z,2026-01-06T00:10:00Z,True,37.6,55.7\n"
+        "first,2,2026-01-06T00:00:00Z,2026-01-06T00:00:00Z,True,37.7,55.8\n",
+        encoding="utf-8",
+    )
+
+    events = list(replay.iter_traffic_events(path, "r", None, limit=1))
+
+    assert [event["tr_id"] for event in events] == ["first"]
+
+
+def test_replay_time_window_filters_after_global_ordering(tmp_path):
+    path = tmp_path / "traffic.csv"
+    path.write_text(
+        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
+        "a,1,2026-01-06 12:10:00,2026-01-06 12:10:00,True,37.6,55.7\n"
+        "b,2,2026-01-06 12:00:00,2026-01-06 12:00:00,True,37.7,55.8\n"
+        "c,3,2026-01-06 12:20:00,2026-01-06 12:20:00,True,37.8,55.9\n",
+        encoding="utf-8",
+    )
+
+    events = list(
+        replay.iter_traffic_events(
+            path,
+            "r",
+            "Europe/Moscow",
+            from_time="2026-01-06 12:05:00",
+            until_time="2026-01-06 12:15:00",
+        )
+    )
+
+    assert [event["tr_id"] for event in events] == ["a"]
+
+
+def test_replay_can_mark_history_warmup_without_advancing_clock(tmp_path):
+    path = tmp_path / "traffic.csv"
+    path.write_text(
+        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
+        "a,1,2026-01-06T00:00:00Z,2026-01-06T00:00:01Z,True,37.6,55.7\n",
+        encoding="utf-8",
+    )
+
+    event = next(
+        replay.iter_traffic_events(path, "r", None, advance_clock=False)
+    )
+
+    assert event["source_identity"]["advance_clock"] is False

@@ -1,0 +1,1443 @@
+diff --git a/.env.example b/.env.example
+index dbce32c..f9ee73a 100644
+--- a/.env.example
++++ b/.env.example
+@@ -6,6 +6,8 @@ TRANSPORT_NDTP_PORT=9201
+ TRANSPORT_RUN_ID=live
+ TRANSPORT_SCHEDULE_VERSION=default
+ TRANSPORT_PREDICTION_INTERVAL=30
++# wall -- real time; replay -- virtual clock advanced by replay telemetry / explicit historical cycles.
++TRANSPORT_CLOCK_MODE=wall
+ # External ML service. Docker Compose uses http://ml-service:8090 by default.
+ TRANSPORT_ML_URL=http://127.0.0.1:8090
+ 
+diff --git a/README.md b/README.md
+index 495073b..44267d7 100644
+--- a/README.md
++++ b/README.md
+@@ -9,7 +9,7 @@
+ ## Исходные документы
+ 
+ - [Архитектура и стек](ARCHITECTURE.md).
+-- [Техническое задание](docs/superpowers/specs/2026-09-25-transport-delay-system-design.md) — проект требований к полной системе, включая ML-часть, которая исключена из этого каркаса.
++- [Техническое задание](docs/superpowers/specs/2026-09-25-transport-delay-system-design.md) -- требования к полной распределенной системе; локальный профиль уже включает ML-интеграцию, но не все инфраструктурные компоненты ТЗ.
+ - [Исследование сценариев оператора](CJM_RESEARCH.md).
+ - [Дизайн интерфейса](DESIGN.md).
+ - [Описание датасета](dataset/README.md) и [спецификация NDTP](dataset/docs/Emulator-and-Telematic-Packets-Specification.md).
+diff --git a/apps/frontend/src/app.js b/apps/frontend/src/app.js
+index 2985f19..8d4136c 100644
+--- a/apps/frontend/src/app.js
++++ b/apps/frontend/src/app.js
+@@ -14,15 +14,18 @@ const predictionMode=p=>{
+   return '—';
+ };
+ const map=new TransitMap($('map'),select);
++const referenceNow=()=>state.snapshot?.clock_mode==='replay'&&state.snapshot?.server_time?Date.parse(state.snapshot.server_time):Date.now();
++const isFresh=v=>freshness(v,referenceNow());
++const isPredictionFresh=p=>predictionFresh(p,referenceNow(),state.snapshot?.coverage?.max_age_seconds||90);
+ function status(text,online=false){state.connected=online;$('connection').textContent=text;$('connection').className=`status ${online?'online':'offline'}`;}
+ function notice(text){$('notice').textContent=text;$('notice').hidden=!text;}
+ function empty(text,cols=1){return `<tr><td colspan="${cols}" class="empty">${esc(text)}</td></tr>`;}
+-function filtered(){return state.vehicles.filter(v=>v.tr_id.toLowerCase().includes(state.query.toLowerCase())&&(state.filter==='all'||freshness(v)===(state.filter==='fresh')));}
++function filtered(){return state.vehicles.filter(v=>v.tr_id.toLowerCase().includes(state.query.toLowerCase())&&(state.filter==='all'||isFresh(v)===(state.filter==='fresh')));}
+ function render(){
+   const snap=state.snapshot,visible=filtered();
+   $('total').textContent=snap?number(snap.counts.vehicles):'—';
+   $('scope').textContent=snap?`В выборке ${state.vehicles.length} из ${snap.counts.vehicles} ТС`:'Снимок бэкенда';
+-  $('fresh').textContent=snap?number(state.vehicles.filter(v=>freshness(v)).length):'—';
++  $('fresh').textContent=snap?number(state.vehicles.filter(v=>isFresh(v)).length):'—';
+   $('forecast').textContent=snap?.coverage?number(snap.coverage.predicted_vehicles):'—';
+   $('coverage-note').textContent=snap?.coverage?`Из ${snap.coverage.target_vehicles} ТС с текущей целью · не старше ${snap.coverage.max_age_seconds} с`:'Нет снимка покрытия';
+   $('cycles').innerHTML=(snap?.prediction_cycles||[]).map(c=>`<tr><td>${formatTime(c.as_of)}</td><td>${esc(c.status)}</td><td>${number(c.duration_ms)} мс</td><td>${esc(c.model_versions?.join(', ')||'—')}</td><td>${esc(c.reason_codes?.join(', ')||'—')}</td></tr>`).join('')||empty('Циклы ещё не запускались',5);
+@@ -30,10 +33,10 @@ function render(){
+   $('issues-count').textContent=snap?number(state.issues.length):'—';
+   $('list-count').textContent=visible.length;
+   $('list-scope').textContent=`Показано ${visible.length} из ${state.vehicles.length} в выборке · максимум 200`;
+-  $('vehicles').innerHTML=visible.length?visible.map(v=>`<button class="vehicle ${v.tr_id===state.selected?'selected':''}" data-id="${esc(v.tr_id)}"><div class="vehicle-top"><span class="bus-icon">▣</span><strong>${esc(v.tr_id)}</strong><span class="vehicle-arrow">↗</span></div><div class="vehicle-meta"><span>Устройство ${esc(v.unit_id)}</span><b>${number(v.speed_kmh)} <small>км/ч</small></b></div><div class="vehicle-bottom"><span class="badge ${freshness(v)?'good':'muted'}">${freshness(v)?'Свежие данные':'Устаревшие данные'}</span>${v.location_valid?'':'<span class="gps-error">GPS !</span>'}</div></button>`).join(''):`<div class="empty large">${state.query||state.filter!=='all'?'Ничего не найдено':'Нет транспорта'}<span>${state.query?'Измените запрос поиска':'В выбранном потоке пока нет данных'}</span></div>`;
++  $('vehicles').innerHTML=visible.length?visible.map(v=>`<button class="vehicle ${v.tr_id===state.selected?'selected':''}" data-id="${esc(v.tr_id)}"><div class="vehicle-top"><span class="bus-icon">▣</span><strong>${esc(v.tr_id)}</strong><span class="vehicle-arrow">↗</span></div><div class="vehicle-meta"><span>Устройство ${esc(v.unit_id)}</span><b>${number(v.speed_kmh)} <small>км/ч</small></b></div><div class="vehicle-bottom"><span class="badge ${isFresh(v)?'good':'muted'}">${isFresh(v)?'Свежие данные':'Устаревшие данные'}</span>${v.location_valid?'':'<span class="gps-error">GPS !</span>'}</div></button>`).join(''):`<div class="empty large">${state.query||state.filter!=='all'?'Ничего не найдено':'Нет транспорта'}<span>${state.query?'Измените запрос поиска':'В выбранном потоке пока нет данных'}</span></div>`;
+   $('vehicles').querySelectorAll('[data-id]').forEach(el=>el.onclick=()=>select(el.dataset.id));
+-  map.update(visible,state.selected);
+-  $('snapshot-time').textContent=snap?`Снимок ${formatTime(snap.server_time)}`:'Нет снимка';
++  map.update(visible,state.selected,referenceNow());
++  $('snapshot-time').textContent=snap?`${snap.clock_mode==='replay'?'Виртуальное время':'Снимок'} ${formatTime(snap.server_time)}`:'Нет снимка';
+   $('model-state').textContent=snap?.ml==='disabled'?'ML-модель не подключена · прогноз может быть недоступен':snap?'ML настроена · статус каждого результата указан отдельно':'Состояние модели неизвестно';
+   $('predictions').innerHTML=state.predictions.length?state.predictions.map(p=>`<tr><td class="mono">${formatTime(p.as_of)}</td><td>${esc(p.tr_id)}</td><td><span class="badge ${p.status==='ok'?'blue':'muted'}">${delayLabel(p)}</span></td><td>${esc(p.error_code||p.status)}<small>${esc((p.reason_codes||[]).join(', '))}</small></td><td>${esc(p.target_stop_id||'—')}<small>${formatTime(p.target_time_begin)}</small></td><td>${esc(p.model_version||'—')}<small>${esc(predictionMode(p))} · ${esc(p.feature_version||'—')}</small></td></tr>`).join(''):empty('В этом потоке ещё нет результатов прогнозирования',6);
+   $('issues').innerHTML=state.issues.length?state.issues.map(i=>`<tr><td class="mono">${formatTime(i.created_at)}</td><td>${esc(i.unit_id||'—')}</td><td><span class="badge warning">${esc(i.reason||'Проблема данных')}</span></td><td>${esc(i.detail||'—')}</td></tr>`).join(''):empty('Проблем данных не зарегистрировано',4);
+@@ -43,7 +46,7 @@ function renderDetails(){
+   const v=state.detail?.vehicle||state.vehicles.find(v=>v.tr_id===state.selected);
+   if(!v){$('details').innerHTML='<div class="empty large">Выберите транспорт<span>Нажмите на строку в списке<br>или маркер на карте</span></div>';return;}
+   const p=state.detail?.predictions?.[0];
+-  $('details').innerHTML=`<div class="detail-hero"><div class="detail-bus">▣</div><span class="eyebrow">ТРАНСПОРТНОЕ СРЕДСТВО</span><h3>${esc(v.tr_id)}</h3><span class="badge ${freshness(v)?'good':'warning'}">${freshness(v)?'Свежая телеметрия':'Данные устарели'}</span></div><div class="speed"><span>Скорость</span><strong>${number(v.speed_kmh)}<small> км/ч</small></strong></div><dl><dt>Устройство</dt><dd>${esc(v.unit_id)}</dd><dt>Последний пакет</dt><dd>${formatTime(v.event_time)}</dd><dt>Позиция получена</dt><dd>${formatTime(v.position_time)}</dd><dt>GPS последнего пакета</dt><dd class="${v.location_valid?'text-good':'text-warning'}">${v.location_valid?'Валиден':'Невалиден'}</dd><dt>Координаты</dt><dd class="mono">${Number.isFinite(v.lat)?v.lat.toFixed(5):'—'}<br>${Number.isFinite(v.lon)?v.lon.toFixed(5):'—'}</dd></dl><button id="focus-vehicle" class="button full">⌖ Показать на карте</button><div class="prediction-card"><span class="eyebrow">ПРОГНОЗ ЗАДЕРЖКИ</span><strong>${state.detail?(p?.status==='ok'&&(!predictionFresh(p)||p.schedule_version!==state.snapshot?.schedule_version)?'Прогноз устарел':delayLabel(p)):'Загрузка…'}</strong><p>${esc(state.detail?(p?.error_code|| (p?`Расчёт: ${formatTime(p.as_of)}`:'Прогноз для этого ТС ещё не получен')):'Получаем карточку транспорта')}</p>${p?`<dl><dt>Цель</dt><dd>${esc(p.target_stop_id)}</dd><dt>Плановое время</dt><dd>${formatTime(p.target_time_begin)}</dd><dt>Горизонт при расчёте</dt><dd>${number((Date.parse(p.target_time_begin)-Date.parse(p.as_of))/60000)} мин</dd>${p.cur_dev_s!=null?`<dt>Текущее отклонение</dt><dd>${number(p.cur_dev_s)} с<small>${esc(p.cur_dev_source||'источник не указан')}</small></dd>`:''}<dt>Модель / признаки</dt><dd>${esc(p.model_version||'—')} / ${esc(p.feature_version||'—')}</dd><dt>Режим</dt><dd>${esc(predictionMode(p))}</dd><dt>Причины</dt><dd>${esc((p.reason_codes||[]).join(', ')||'—')}</dd>${p.late_probability!=null?`<dt>Вероятность задержки &gt; ${number(p.late_threshold_s)} с</dt><dd>${number(p.late_probability*100)}%</dd>`:''}${p.interval_lower_s!=null?`<dt>Интервал (${number(p.interval_coverage*100)}%)</dt><dd>${number(p.interval_lower_s)}…${number(p.interval_upper_s)} с</dd>`:''}</dl>`:''}</div><div class="detail-note">${v.location_valid?'Показана последняя пригодная позиция.':'GPS последнего пакета невалиден. На карте сохранена предыдущая пригодная позиция.'}</div><div class="detail-note">Флаги качества: ${esc((v.quality_flags||[]).join(', ')||'не отмечены')}</div>`;
++  $('details').innerHTML=`<div class="detail-hero"><div class="detail-bus">▣</div><span class="eyebrow">ТРАНСПОРТНОЕ СРЕДСТВО</span><h3>${esc(v.tr_id)}</h3><span class="badge ${isFresh(v)?'good':'warning'}">${isFresh(v)?'Свежая телеметрия':'Данные устарели'}</span></div><div class="speed"><span>Скорость</span><strong>${number(v.speed_kmh)}<small> км/ч</small></strong></div><dl><dt>Устройство</dt><dd>${esc(v.unit_id)}</dd><dt>Последний пакет</dt><dd>${formatTime(v.event_time)}</dd><dt>Позиция получена</dt><dd>${formatTime(v.position_time)}</dd><dt>GPS последнего пакета</dt><dd class="${v.location_valid?'text-good':'text-warning'}">${v.location_valid?'Валиден':'Невалиден'}</dd><dt>Координаты</dt><dd class="mono">${Number.isFinite(v.lat)?v.lat.toFixed(5):'—'}<br>${Number.isFinite(v.lon)?v.lon.toFixed(5):'—'}</dd></dl><button id="focus-vehicle" class="button full">⌖ Показать на карте</button><div class="prediction-card"><span class="eyebrow">ПРОГНОЗ ЗАДЕРЖКИ</span><strong>${state.detail?(p?.status==='ok'&&(!isPredictionFresh(p)||p.schedule_version!==state.snapshot?.schedule_version)?'Прогноз устарел':delayLabel(p)):'Загрузка…'}</strong><p>${esc(state.detail?(p?.error_code|| (p?`Расчёт: ${formatTime(p.as_of)}`:'Прогноз для этого ТС ещё не получен')):'Получаем карточку транспорта')}</p>${p?`<dl><dt>Цель</dt><dd>${esc(p.target_stop_id)}</dd><dt>Плановое время</dt><dd>${formatTime(p.target_time_begin)}</dd><dt>Горизонт при расчёте</dt><dd>${number((Date.parse(p.target_time_begin)-Date.parse(p.as_of))/60000)} мин</dd>${p.cur_dev_s!=null?`<dt>Текущее отклонение</dt><dd>${number(p.cur_dev_s)} с<small>${esc(p.cur_dev_source||'источник не указан')}</small></dd>`:''}<dt>Модель / признаки</dt><dd>${esc(p.model_version||'—')} / ${esc(p.feature_version||'—')}</dd><dt>Режим</dt><dd>${esc(predictionMode(p))}</dd><dt>Причины</dt><dd>${esc((p.reason_codes||[]).join(', ')||'—')}</dd>${p.late_probability!=null?`<dt>Вероятность задержки &gt; ${number(p.late_threshold_s)} с</dt><dd>${number(p.late_probability*100)}%</dd>`:''}${p.interval_lower_s!=null?`<dt>Интервал (${number(p.interval_coverage*100)}%)</dt><dd>${number(p.interval_lower_s)}…${number(p.interval_upper_s)} с</dd>`:''}</dl>`:''}</div><div class="detail-note">${v.location_valid?'Показана последняя пригодная позиция.':'GPS последнего пакета невалиден. На карте сохранена предыдущая пригодная позиция.'}</div><div class="detail-note">Флаги качества: ${esc((v.quality_flags||[]).join(', ')||'не отмечены')}</div>`;
+   $('focus-vehicle').onclick=()=>map.focus(v);
+ }
+ async function select(id){state.selected=id;state.detail=null;render();await loadDetail();}
+@@ -124,4 +127,4 @@ $('check-ml').onclick=async()=>{
+ };
+ 
+ // Expire visible values even while HTTP and SSE are offline.
+-setInterval(()=>{if(state.token){renderDetails();if(state.snapshot?.coverage&&Date.now()-Date.parse(state.snapshot.coverage.evaluated_at)>5000){$('forecast').textContent='—';$('coverage-note').textContent='Снимок покрытия устарел · ожидаем обновление';}}},1000);
++setInterval(()=>{if(state.token){renderDetails();if(state.snapshot?.clock_mode!=='replay'&&state.snapshot?.coverage&&Date.now()-Date.parse(state.snapshot.coverage.evaluated_at)>5000){$('forecast').textContent='—';$('coverage-note').textContent='Снимок покрытия устарел · ожидаем обновление';}}},1000);
+diff --git a/apps/frontend/src/map.js b/apps/frontend/src/map.js
+index 8b77d4c..45ffbf2 100644
+--- a/apps/frontend/src/map.js
++++ b/apps/frontend/src/map.js
+@@ -1,7 +1,7 @@
+ import {project,unproject,freshness} from './model.js';
+ export class TransitMap {
+   constructor(el,onSelect) {
+-    this.el=el;this.onSelect=onSelect;this.center=[37.62,55.755];this.zoom=11;this.vehicles=[];this.selected=null;this.tiles=new Map();
++    this.el=el;this.onSelect=onSelect;this.center=[37.62,55.755];this.zoom=11;this.vehicles=[];this.selected=null;this.now=Date.now();this.tiles=new Map();
+     el.innerHTML='<div class="tiles"></div><div class="markers"></div><div class="map-empty">Нет координат в выбранной выборке</div><div class="map-note">Подложка загружается…</div>';
+     this.tileLayer=el.querySelector('.tiles');this.markerLayer=el.querySelector('.markers');
+     window.addEventListener('online',()=>{for(const [key,tile] of this.tiles)if(tile.dataset.state==='error'){tile.remove();this.tiles.delete(key);}this.render();});
+@@ -17,7 +17,7 @@ export class TransitMap {
+     const loading=values.some(t=>t.dataset.state==='loading'),failed=values.some(t=>t.dataset.state==='error');
+     this.el.querySelector('.map-note').textContent=loading?'Загрузка подложки…':failed?'Часть подложки недоступна · позиции по координатам':'© OpenStreetMap contributors';
+   }
+-  update(vehicles,selected){this.vehicles=vehicles;this.selected=selected;this.render();}
++  update(vehicles,selected,now=Date.now()){this.vehicles=vehicles;this.selected=selected;this.now=now;this.render();}
+   step(n){this.zoom=Math.max(3,Math.min(18,this.zoom+n));this.render();}
+   focus(v){if(v && Number.isFinite(v.lon)&&Number.isFinite(v.lat)){this.center=[v.lon,v.lat];this.zoom=14;}this.render();}
+   reset(){this.center=[37.62,55.755];this.zoom=11;this.render();}
+@@ -32,7 +32,7 @@ export class TransitMap {
+     }
+     for(const [key,tile]of this.tiles)if(!needed.has(key)){tile.remove();this.tiles.delete(key);}
+     this.tileStatus();this.markerLayer.replaceChildren();let count=0;
+-    for(const v of this.vehicles){if(!Number.isFinite(v.lat)||!Number.isFinite(v.lon))continue;count++;const [x,y]=project(v.lon,v.lat,this.zoom);const marker=document.createElement('button');marker.className=`map-marker ${freshness(v)&&v.location_valid?'':'stale'} ${v.tr_id===this.selected?'selected':''}`;marker.style.left=`${x-left}px`;marker.style.top=`${y-top}px`;marker.textContent='↗';marker.title=`ТС ${v.tr_id}${v.location_valid?'':' · последняя пригодная позиция'}`;marker.setAttribute('aria-label',`Показать ТС ${v.tr_id}`);marker.onclick=()=>this.onSelect(v.tr_id);this.markerLayer.append(marker);}
++    for(const v of this.vehicles){if(!Number.isFinite(v.lat)||!Number.isFinite(v.lon))continue;count++;const [x,y]=project(v.lon,v.lat,this.zoom);const marker=document.createElement('button');marker.className=`map-marker ${freshness(v,this.now)&&v.location_valid?'':'stale'} ${v.tr_id===this.selected?'selected':''}`;marker.style.left=`${x-left}px`;marker.style.top=`${y-top}px`;marker.textContent='↗';marker.title=`ТС ${v.tr_id}${v.location_valid?'':' · последняя пригодная позиция'}`;marker.setAttribute('aria-label',`Показать ТС ${v.tr_id}`);marker.onclick=()=>this.onSelect(v.tr_id);this.markerLayer.append(marker);}
+     this.el.querySelector('.map-empty').hidden=count>0;
+   }
+ }
+diff --git a/contracts/http/openapi.json b/contracts/http/openapi.json
+index 723af2a..613d9f8 100644
+--- a/contracts/http/openapi.json
++++ b/contracts/http/openapi.json
+@@ -905,6 +905,70 @@
+         }
+       }
+     },
++    "/api/v1/replay-clock": {
++      "put": {
++        "summary": "Replay Clock",
++        "operationId": "replay_clock_api_v1_replay_clock_put",
++        "parameters": [
++          {
++            "name": "run_id",
++            "in": "query",
++            "required": false,
++            "schema": {
++              "type": "string",
++              "default": "live",
++              "title": "Run Id"
++            }
++          },
++          {
++            "name": "authorization",
++            "in": "header",
++            "required": false,
++            "schema": {
++              "anyOf": [
++                {
++                  "type": "string"
++                },
++                {
++                  "type": "null"
++                }
++              ],
++              "title": "Authorization"
++            }
++          }
++        ],
++        "requestBody": {
++          "required": true,
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/ReplayClock"
++              }
++            }
++          }
++        },
++        "responses": {
++          "200": {
++            "description": "Successful Response",
++            "content": {
++              "application/json": {
++                "schema": {}
++              }
++            }
++          },
++          "422": {
++            "description": "Validation Error",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            }
++          }
++        }
++      }
++    },
+     "/api/v1/events": {
+       "get": {
+         "summary": "Events",
+@@ -1038,6 +1102,21 @@
+         "type": "object",
+         "title": "HTTPValidationError"
+       },
++      "ReplayClock": {
++        "properties": {
++          "as_of": {
++            "type": "string",
++            "format": "date-time",
++            "title": "As Of"
++          }
++        },
++        "additionalProperties": false,
++        "type": "object",
++        "required": [
++          "as_of"
++        ],
++        "title": "ReplayClock"
++      },
+       "ScheduleVisit": {
+         "properties": {
+           "schedule_version": {
+diff --git a/docs/development/backend.md b/docs/development/backend.md
+index 5de3e83..65f90bb 100644
+--- a/docs/development/backend.md
++++ b/docs/development/backend.md
+@@ -126,7 +126,11 @@ set -a; . ./.env; set +a
+ 
+ Импорт планов читает только плановые поля; `time_fact_begin` и labels не передаются. Replay имеет устойчивые ID файла/строки и отдельный run. Устройство берётся из CSV; отсутствующая/противоречивая связь — явная ошибка. Частично выполненный импорт можно повторить, уже сохранённые одинаковые записи не размножаются.
+ 
+-Для прогнозов исторического replay запустите отдельный backend с отдельной БД, нужными `TRANSPORT_RUN_ID` и `TRANSPORT_SCHEDULE_VERSION`; вызывайте циклы с историческим `as_of`. Автоматический scheduler использует текущие часы и не является контроллером виртуального времени. Полноценные пауза/ускорение прогнозных часов из F13 ещё не реализованы.
++Для исторического replay запустите backend с нужными `TRANSPORT_RUN_ID`, `TRANSPORT_SCHEDULE_VERSION` и `TRANSPORT_CLOCK_MODE=replay`. Replay двигает часы по `receive_time`; scheduler сравнивает именно виртуальное время и запускает prediction cycle через `TRANSPORT_PREDICTION_INTERVAL` предметных секунд. Dashboard, `/vehicles`, `/telemetry`, история циклов, карта, свежесть телеметрии и покрытие прогнозами читаются на том же causal `as_of`, поэтому заранее загруженные будущие события не попадают в текущий снимок. Пауза replay не старит предметные данные; HTTP timeout и health-check остаются на реальных часах.
++
++Для warm-up replay поддерживает `--no-advance-clock`: история загружается в БД, но виртуальное время не меняется. `PUT /api/v1/replay-clock` позволяет явно поставить или откатить часы; повтор уже сохраненных replay-событий после отката снова продвигает часы без дублей telemetry.
++
++Для визуального validation-demo используйте `TRANSPORT_PREDICTION_INTERVAL=60` и `scripts/dev/run-replay-demo.sh`. Скрипт загружает 30 минут causal history, ставит часы на `12:30 MSK`, а затем примерно за 90 секунд проигрывает `12:30--12:45` с `--speed 10`. Получается около 15 автоматических циклов, при этом интервал пересчета остается меньше текущего TTL прогноза 90 секунд.
+ 
+ ## Проверки
+ 
+diff --git a/packages/storage/src/transport_storage/store.py b/packages/storage/src/transport_storage/store.py
+index 6c56384..b2f8216 100644
+--- a/packages/storage/src/transport_storage/store.py
++++ b/packages/storage/src/transport_storage/store.py
+@@ -50,7 +50,7 @@ class Store:
+         self.db.execute("PRAGMA synchronous=FULL")
+         self.db.execute("PRAGMA foreign_keys=ON")
+         version = self.db.execute("PRAGMA user_version").fetchone()[0]
+-        if version not in (0, 1):
++        if version not in (0, 1, 2):
+             self.db.close()
+             raise RuntimeError("unsupported_database_version")
+         self.db.executescript("""
+@@ -61,6 +61,8 @@ class Store:
+           receive_time TEXT NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL,
+           processed INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,event_id));
+         CREATE INDEX IF NOT EXISTS telemetry_vehicle ON telemetry(run_id,tr_id,event_time);
++        CREATE INDEX IF NOT EXISTS telemetry_availability ON telemetry(run_id,receive_time,event_time);
++        CREATE INDEX IF NOT EXISTS telemetry_vehicle_availability ON telemetry(run_id,tr_id,receive_time,event_time);
+         CREATE INDEX IF NOT EXISTS telemetry_pending ON telemetry(processed,seq);
+         CREATE TABLE IF NOT EXISTS states(run_id TEXT, tr_id TEXT, body TEXT NOT NULL,
+           PRIMARY KEY(run_id,tr_id));
+@@ -79,7 +81,9 @@ class Store:
+           run_id TEXT, type TEXT, entity_id TEXT, created_at TEXT, body TEXT);
+         CREATE TABLE IF NOT EXISTS prediction_cycles(
+           id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, body TEXT NOT NULL);
+-        PRAGMA user_version=1;
++        CREATE TABLE IF NOT EXISTS run_clocks(
++          run_id TEXT PRIMARY KEY, as_of TEXT NOT NULL, updated_at TEXT NOT NULL);
++        PRAGMA user_version=2;
+         """)
+         self.db.commit()
+ 
+@@ -102,6 +106,149 @@ class Store:
+         with self.lock:
+             return self.db.execute("SELECT 1").fetchone()[0] == 1
+ 
++    def set_run_clock(self, run_id, as_of):
++        """Set the domain clock for a replay run. Wall-clock metadata stays separate."""
++        value = timestamp(as_of)
++        with self.transaction() as db:
++            db.execute(
++                "INSERT INTO run_clocks(run_id,as_of,updated_at) VALUES(?,?,?) "
++                "ON CONFLICT(run_id) DO UPDATE SET as_of=excluded.as_of,updated_at=excluded.updated_at",
++                (run_id, value, now()),
++            )
++            self._change(db, run_id, "clock.updated", run_id, {"as_of": value})
++        return value
++
++    def run_clock(self, run_id):
++        with self.lock:
++            row = self.db.execute(
++                "SELECT as_of FROM run_clocks WHERE run_id=?", (run_id,)
++            ).fetchone()
++            return row[0] if row else None
++
++    def latest_telemetry_time(self, run_id):
++        """Latest availability time, used only to bootstrap an existing replay DB."""
++        with self.lock:
++            row = self.db.execute(
++                "SELECT max(receive_time) FROM telemetry WHERE run_id=?", (run_id,)
++            ).fetchone()
++            return row[0] if row and row[0] else None
++
++    def vehicle_at(self, run_id, tr_id, as_of):
++        """Reconstruct one causal vehicle state at ``as_of``."""
++        cutoff = timestamp(as_of)
++        with self.lock:
++            latest = self.db.execute(
++                "SELECT body FROM telemetry WHERE run_id=? AND tr_id=? "
++                "AND event_time<=? AND receive_time<=? "
++                "ORDER BY event_time DESC,seq DESC LIMIT 1",
++                (run_id, tr_id, cutoff, cutoff),
++            ).fetchone()
++            if latest is None:
++                return None
++            position = self.db.execute(
++                "SELECT body FROM telemetry WHERE run_id=? AND tr_id=? "
++                "AND event_time<=? AND receive_time<=? "
++                "AND json_extract(body,'$.location_valid')=1 "
++                "AND json_extract(body,'$.lat') IS NOT NULL AND json_extract(body,'$.lon') IS NOT NULL "
++                "ORDER BY event_time DESC,seq DESC LIMIT 1",
++                (run_id, tr_id, cutoff, cutoff),
++            ).fetchone()
++        event = json.loads(latest[0])
++        good = json.loads(position[0]) if position else None
++        return dict(
++            run_id=run_id,
++            tr_id=tr_id,
++            entity_version=0,
++            event_time=event["event_time"],
++            receive_time=event["receive_time"],
++            unit_id=event["unit_id"],
++            speed_kmh=event.get("speed_kmh"),
++            heading_deg=event.get("heading_deg"),
++            location_valid=event.get("location_valid", False),
++            quality_flags=event.get("quality_flags", []),
++            lat=good.get("lat") if good else None,
++            lon=good.get("lon") if good else None,
++            position_time=good.get("event_time") if good else None,
++        )
++
++    def vehicles_at(self, run_id, as_of, limit=50, offset=0):
++        """Reconstruct a causal vehicle snapshot at ``as_of`` for replay UI."""
++        cutoff = timestamp(as_of)
++        with self.lock:
++            latest = self.db.execute(
++                "WITH ranked AS ("
++                " SELECT tr_id,body,row_number() OVER (PARTITION BY tr_id ORDER BY event_time DESC,seq DESC) AS rn"
++                " FROM telemetry WHERE run_id=? AND event_time<=? AND receive_time<=?"
++                ") SELECT tr_id,body FROM ranked WHERE rn=1 ORDER BY tr_id LIMIT ? OFFSET ?",
++                (run_id, cutoff, cutoff, limit, offset),
++            ).fetchall()
++            if not latest:
++                return []
++            tr_ids = [r["tr_id"] for r in latest]
++            placeholders = ",".join("?" for _ in tr_ids)
++            positions = self.db.execute(
++                "WITH ranked AS ("
++                " SELECT tr_id,body,row_number() OVER (PARTITION BY tr_id ORDER BY event_time DESC,seq DESC) AS rn"
++                " FROM telemetry WHERE run_id=? AND event_time<=? AND receive_time<=?"
++                " AND json_extract(body,'$.location_valid')=1"
++                " AND json_extract(body,'$.lat') IS NOT NULL AND json_extract(body,'$.lon') IS NOT NULL"
++                f") SELECT tr_id,body FROM ranked WHERE rn=1 AND tr_id IN ({placeholders})",
++                (run_id, cutoff, cutoff, *tr_ids),
++            ).fetchall()
++        position_by_tr = {r["tr_id"]: json.loads(r["body"]) for r in positions}
++        result = []
++        for row in latest:
++            event = json.loads(row["body"])
++            position = position_by_tr.get(row["tr_id"])
++            result.append(
++                dict(
++                    run_id=run_id,
++                    tr_id=row["tr_id"],
++                    entity_version=0,
++                    event_time=event["event_time"],
++                    receive_time=event["receive_time"],
++                    unit_id=event["unit_id"],
++                    speed_kmh=event.get("speed_kmh"),
++                    heading_deg=event.get("heading_deg"),
++                    location_valid=event.get("location_valid", False),
++                    quality_flags=event.get("quality_flags", []),
++                    lat=position.get("lat") if position else None,
++                    lon=position.get("lon") if position else None,
++                    position_time=position.get("event_time") if position else None,
++                )
++            )
++        return result
++
++    def snapshot_at(self, run_id, as_of, limit=50, offset=0):
++        cutoff = timestamp(as_of)
++        with self.lock:
++            cursor = self.db.execute(
++                "SELECT coalesce(max(id),0) FROM changes WHERE run_id=?", (run_id,)
++            ).fetchone()[0]
++            counts = dict(
++                vehicles=self.db.execute(
++                    "SELECT count(DISTINCT tr_id) FROM telemetry "
++                    "WHERE run_id=? AND event_time<=? AND receive_time<=?",
++                    (run_id, cutoff, cutoff),
++                ).fetchone()[0],
++                events=self.db.execute(
++                    "SELECT count(*) FROM telemetry WHERE run_id=? AND event_time<=? AND receive_time<=?",
++                    (run_id, cutoff, cutoff),
++                ).fetchone()[0],
++                pending=self.db.execute(
++                    "SELECT count(*) FROM telemetry WHERE run_id=? AND processed=0 "
++                    "AND event_time<=? AND receive_time<=?",
++                    (run_id, cutoff, cutoff),
++                ).fetchone()[0],
++            )
++        return dict(
++            run_id=run_id,
++            event_cursor=cursor,
++            snapshot_id=f"{run_id}:{cursor}:{cutoff}",
++            counts=counts,
++            vehicles=self.vehicles_at(run_id, as_of, limit, offset),
++        )
++
+     def bind_device(self, unit_id, tr_id):
+         with self.transaction() as db:
+             old = db.execute(
+@@ -118,6 +265,29 @@ class Store:
+             ).fetchone()
+             return row[0] if row else None
+ 
++    def _advance_replay_clock(self, db, event):
++        if event.get("source") != "replay":
++            return
++        identity = event.get("source_identity") or {}
++        if identity.get("advance_clock", True) is False:
++            return
++        run_id = event["run_id"]
++        value = event["receive_time"]
++        row = db.execute(
++            "SELECT as_of FROM run_clocks WHERE run_id=?", (run_id,)
++        ).fetchone()
++        if row is not None and row[0] >= value:
++            return
++        previous = row[0] if row else None
++        db.execute(
++            "INSERT INTO run_clocks(run_id,as_of,updated_at) VALUES(?,?,?) "
++            "ON CONFLICT(run_id) DO UPDATE SET as_of=excluded.as_of,updated_at=excluded.updated_at",
++            (run_id, value, now()),
++        )
++        # One SSE clock tick per virtual second is enough even for dense telemetry.
++        if previous is None or previous[:19] != value[:19]:
++            self._change(db, run_id, "clock.updated", run_id, {"as_of": value})
++
+     def enqueue(self, event, max_pending=10000):
+         event = dict(event)
+         for key in ("event_time", "receive_time", "ingested_at"):
+@@ -137,6 +307,7 @@ class Store:
+             if old:
+                 if old[0] != digest:
+                     raise Conflict("event_id_conflict")
++                self._advance_replay_clock(db, event)
+                 return False
+             if (
+                 db.execute(
+@@ -157,6 +328,7 @@ class Store:
+                     canonical(event),
+                 ),
+             )
++            self._advance_replay_clock(db, event)
+             return True
+ 
+     def _change(self, db, run_id, kind, entity_id, body):
+@@ -418,18 +590,20 @@ class Store:
+                 (batch["request_id"],),
+             )
+ 
+-    def predictions(self, run_id, tr_id=None, limit=50, offset=0):
++    def predictions(self, run_id, tr_id=None, limit=50, offset=0, as_of=None):
++        cutoff = timestamp(as_of) if as_of is not None else None
+         with self.lock:
++            query = "SELECT body FROM predictions WHERE run_id=?"
++            params = [run_id]
+             if tr_id is not None:
+-                rows = self.db.execute(
+-                    "SELECT body FROM predictions WHERE run_id=? AND tr_id=? ORDER BY as_of DESC,prediction_id LIMIT ? OFFSET ?",
+-                    (run_id, tr_id, limit, offset),
+-                )
+-            else:
+-                rows = self.db.execute(
+-                    "SELECT body FROM predictions WHERE run_id=? ORDER BY as_of DESC,prediction_id LIMIT ? OFFSET ?",
+-                    (run_id, limit, offset),
+-                )
++                query += " AND tr_id=?"
++                params.append(tr_id)
++            if cutoff is not None:
++                query += " AND as_of<=?"
++                params.append(cutoff)
++            query += " ORDER BY as_of DESC,prediction_id LIMIT ? OFFSET ?"
++            params.extend([limit, offset])
++            rows = self.db.execute(query, params)
+             return [json.loads(r[0]) for r in rows]
+ 
+     def snapshot(self, run_id, limit=50):
+@@ -478,15 +652,24 @@ class Store:
+                 "(SELECT max(id)-10000 FROM prediction_cycles)"
+             )
+ 
+-    def cycles(self, run_id, limit=50):
++    def cycles(self, run_id, limit=50, as_of=None):
++        cutoff = timestamp(as_of) if as_of is not None else None
+         with self.lock:
+-            return [
++            fetch_limit = 10000 if cutoff is not None else limit
++            items = [
+                 json.loads(r[0])
+                 for r in self.db.execute(
+                     "SELECT body FROM prediction_cycles WHERE run_id=? ORDER BY id DESC LIMIT ?",
+-                    (run_id, limit),
++                    (run_id, fetch_limit),
+                 )
+             ]
++        if cutoff is None:
++            return items
++        return [
++            item
++            for item in items
++            if item.get("as_of") is not None and timestamp(item["as_of"]) <= cutoff
++        ][:limit]
+ 
+     def coverage(self, run_id, schedule_version, as_of, max_age_seconds=90):
+         with self.lock:
+@@ -524,14 +707,27 @@ class Store:
+                 evaluated_at=timestamp(as_of),
+             )
+ 
+-    def dashboard(self, run_id, limit, schedule_version, as_of):
++    def dashboard(self, run_id, limit, schedule_version, as_of, causal=False):
+         with self.lock:
+-            data = self.snapshot(run_id, limit)
++            data = (
++                self.snapshot_at(run_id, as_of, limit)
++                if causal
++                else self.snapshot(run_id, limit)
++            )
+             data["schedule_version"] = schedule_version
+             data["coverage"] = self.coverage(run_id, schedule_version, as_of)
+-            data["prediction_cycles"] = self.cycles(run_id, 10)
+-            data["prediction_backlog"] = self.db.execute(
+-                "SELECT count(*) FROM batches WHERE run_id=? AND status='pending'",
+-                (run_id,),
+-            ).fetchone()[0]
++            data["prediction_cycles"] = self.cycles(
++                run_id, 10, as_of if causal else None
++            )
++            if causal:
++                backlog = self.db.execute(
++                    "SELECT count(*) FROM batches WHERE run_id=? AND status='pending' AND as_of<=?",
++                    (run_id, timestamp(as_of)),
++                ).fetchone()[0]
++            else:
++                backlog = self.db.execute(
++                    "SELECT count(*) FROM batches WHERE run_id=? AND status='pending'",
++                    (run_id,),
++                ).fetchone()[0]
++            data["prediction_backlog"] = backlog
+             return data
+diff --git a/scripts/dev/README.md b/scripts/dev/README.md
+index ef9de3c..c4d30a2 100644
+--- a/scripts/dev/README.md
++++ b/scripts/dev/README.md
+@@ -48,3 +48,23 @@ TRANSPORT_ML_URL=http://127.0.0.1:8090
+ 
+ - `soak.py` -- длительный прогон NDTP;
+ - model preflight и offline replay описаны в `docs/development/ml-integration.md`.
++
++## Historical replay с живым UI
++
++В `.env`:
++
++```env
++TRANSPORT_RUN_ID=validation-demo
++TRANSPORT_SCHEDULE_VERSION=validation
++TRANSPORT_CLOCK_MODE=replay
++TRANSPORT_PREDICTION_INTERVAL=60
++TRANSPORT_ML_URL=http://127.0.0.1:8090
++```
++
++После перезапуска ML и backend в третьем терминале достаточно:
++
++```bash
++scripts/dev/run-replay-demo.sh
++```
++
++Скрипт делает causal warm-up, затем около 90 секунд проигрывает 15 виртуальных минут с автоматическими prediction cycles. Откройте `http://127.0.0.1:8000/` и выберите поток из `TRANSPORT_RUN_ID`. Dashboard, карта, свежесть телеметрии и актуальность прогноза используют виртуальное время. Подробности -- `tools/csv-replay/README.md`.
+diff --git a/scripts/dev/run-replay-demo.sh b/scripts/dev/run-replay-demo.sh
+new file mode 100755
+index 0000000..c4d42d9
+--- /dev/null
++++ b/scripts/dev/run-replay-demo.sh
+@@ -0,0 +1,85 @@
++#!/bin/sh
++set -eu
++cd "$(dirname "$0")/../.."
++
++if [ ! -x .venv/bin/python ]; then
++  echo 'Create .venv and install the project first.' >&2
++  exit 1
++fi
++if [ ! -f .env ]; then
++  echo 'Missing .env.' >&2
++  exit 1
++fi
++
++set -a
++. ./.env
++set +a
++
++: "${TRANSPORT_API_TOKEN:?Set TRANSPORT_API_TOKEN in .env}"
++: "${TRANSPORT_RUN_ID:?Set TRANSPORT_RUN_ID in .env}"
++: "${TRANSPORT_SCHEDULE_VERSION:?Set TRANSPORT_SCHEDULE_VERSION in .env}"
++
++if [ "${TRANSPORT_CLOCK_MODE:-wall}" != "replay" ]; then
++  echo 'Set TRANSPORT_CLOCK_MODE=replay in .env and restart backend.' >&2
++  exit 1
++fi
++
++BASE_URL=${BASE_URL:-http://127.0.0.1:8000}
++RUN_ID=$TRANSPORT_RUN_ID
++SCHEDULE_VERSION=$TRANSPORT_SCHEDULE_VERSION
++
++DASHBOARD=$(curl -fsS \
++  -H "Authorization: Bearer $TRANSPORT_API_TOKEN" \
++  "$BASE_URL/api/v1/dashboard?run_id=$RUN_ID&limit=1")
++case "$DASHBOARD" in
++  *'"clock_mode":"replay"'*) ;;
++  *)
++    echo 'Backend is not running in replay clock mode. Restart scripts/dev/run-backend.sh.' >&2
++    exit 1
++    ;;
++esac
++
++curl -fsS \
++  -H "Authorization: Bearer $TRANSPORT_API_TOKEN" \
++  -X POST \
++  "$BASE_URL/api/v1/ml/check" >/dev/null
++
++echo '1/4 Importing validation schedule...'
++.venv/bin/python tools/data-import/import_schedule.py \
++  dataset/validate/schedule_plan.csv \
++  --base-url "$BASE_URL" \
++  --timezone Europe/Moscow \
++  --schedule-version "$SCHEDULE_VERSION"
++
++echo '2/4 Loading 30 minutes of causal history without moving virtual time...'
++.venv/bin/python tools/csv-replay/replay.py \
++  dataset/validate/traffic.csv \
++  --base-url "$BASE_URL" \
++  --timezone Europe/Moscow \
++  --run-id "$RUN_ID" \
++  --from-time '2026-01-06 12:00:00' \
++  --until-time '2026-01-06 12:29:59.999999' \
++  --no-advance-clock \
++  --speed 0
++
++echo '3/4 Setting virtual clock to 12:30 Moscow time...'
++curl -fsS \
++  -H "Authorization: Bearer $TRANSPORT_API_TOKEN" \
++  -H 'Content-Type: application/json' \
++  -X PUT \
++  "$BASE_URL/api/v1/replay-clock?run_id=$RUN_ID" \
++  -d '{"as_of":"2026-01-06T12:30:00+03:00"}'
++echo
++
++echo '4/4 Live replay: 15 virtual minutes, about 90 seconds at x10.'
++echo "Open $BASE_URL and select stream: $RUN_ID"
++.venv/bin/python tools/csv-replay/replay.py \
++  dataset/validate/traffic.csv \
++  --base-url "$BASE_URL" \
++  --timezone Europe/Moscow \
++  --run-id "$RUN_ID" \
++  --from-time '2026-01-06 12:30:00.000001' \
++  --until-time '2026-01-06 12:44:59.999999' \
++  --speed 10
++
++echo 'Replay demo complete.'
+diff --git a/services/backend/src/backend/app.py b/services/backend/src/backend/app.py
+index ff01386..4c5f560 100644
+--- a/services/backend/src/backend/app.py
++++ b/services/backend/src/backend/app.py
+@@ -79,6 +79,11 @@ class Cycle(BaseModel):
+     as_of: AwareDatetime | None = None
+ 
+ 
++class ReplayClock(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    as_of: AwareDatetime
++
++
+ Limit = Annotated[int, Query(ge=1, le=200)]
+ Offset = Annotated[int, Query(ge=0, le=1000000)]
+ 
+@@ -89,6 +94,10 @@ def create_app(settings: Settings | None = None):
+     @asynccontextmanager
+     async def lifespan(app):
+         store = Store(settings.db_path)
++        if settings.clock_mode == "replay" and store.run_clock(settings.run_id) is None:
++            latest = store.latest_telemetry_time(settings.run_id)
++            if latest is not None:
++                store.set_run_clock(settings.run_id, latest)
+         process_lock = None
+         try:
+             if settings.db_path != ":memory:":
+@@ -238,6 +247,13 @@ def create_app(settings: Settings | None = None):
+ 
+     router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth)])
+ 
++    async def effective_time(request: Request, run_id: str) -> datetime:
++        if settings.clock_mode == "replay":
++            raw = await asyncio.to_thread(request.app.state.store.run_clock, run_id)
++            if raw is not None:
++                return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
++        return datetime.now(UTC)
++
+     @app.get("/api/v1/health/live")
+     async def live():
+         return {"status": "live"}
+@@ -274,7 +290,10 @@ def create_app(settings: Settings | None = None):
+         bound = await asyncio.to_thread(store.resolve_device, event.unit_id)
+         if bound != event.tr_id:
+             raise HTTPException(422, "unknown_or_mismatched_device")
+-        if event.event_time > datetime.now(UTC) + timedelta(seconds=60):
++        if (
++            event.source != "replay"
++            and event.event_time > datetime.now(UTC) + timedelta(seconds=60)
++        ):
+             raise HTTPException(422, "future_event")
+         # Ingested-at is a server fact, not controlled by callers.
+         data = event.model_dump(mode="json")
+@@ -315,18 +334,24 @@ def create_app(settings: Settings | None = None):
+         limit: Limit = 50,
+         offset: Offset = 0,
+     ):
+-        return {
+-            "items": await asyncio.to_thread(
+-                request.app.state.store.vehicles, run_id, limit, offset
+-            ),
+-            "limit": limit,
+-            "offset": offset,
+-        }
++        store = request.app.state.store
++        clock = await effective_time(request, run_id)
++        if settings.clock_mode == "replay":
++            items = await asyncio.to_thread(
++                store.vehicles_at, run_id, clock, limit, offset
++            )
++        else:
++            items = await asyncio.to_thread(store.vehicles, run_id, limit, offset)
++        return {"items": items, "limit": limit, "offset": offset}
+ 
+     @router.get("/vehicles/{tr_id}")
+     async def vehicle(tr_id: str, request: Request, run_id: str = settings.run_id):
+         store = request.app.state.store
+-        state = await asyncio.to_thread(store.vehicle, run_id, tr_id)
++        clock = await effective_time(request, run_id)
++        if settings.clock_mode == "replay":
++            state = await asyncio.to_thread(store.vehicle_at, run_id, tr_id, clock)
++        else:
++            state = await asyncio.to_thread(store.vehicle, run_id, tr_id)
+         if state is None:
+             raise HTTPException(404, "vehicle_not_found")
+         return {
+@@ -335,8 +360,15 @@ def create_app(settings: Settings | None = None):
+                 store.schedule, settings.schedule_version, tr_id, 200
+             ),
+             "predictions": await asyncio.to_thread(
+-                store.predictions, run_id, tr_id, 10
++                store.predictions,
++                run_id,
++                tr_id,
++                10,
++                0,
++                clock if settings.clock_mode == "replay" else None,
+             ),
++            "server_time": clock,
++            "clock_mode": settings.clock_mode,
+         }
+ 
+     @router.get("/telemetry")
+@@ -347,13 +379,14 @@ def create_app(settings: Settings | None = None):
+         limit: Limit = 50,
+         offset: Offset = 0,
+     ):
++        clock = await effective_time(request, run_id)
+         return {
+             "items": await asyncio.to_thread(
+                 request.app.state.store.telemetry,
+                 run_id,
+                 tr_id,
+                 limit,
+-                None,
++                clock if settings.clock_mode == "replay" else None,
+                 None,
+                 offset,
+             )
+@@ -363,16 +396,21 @@ def create_app(settings: Settings | None = None):
+     async def snapshot(
+         request: Request, run_id: str = settings.run_id, limit: Limit = 50
+     ):
++        wall_time = datetime.now(UTC)
++        clock = await effective_time(request, run_id)
+         data = await asyncio.to_thread(
+             request.app.state.store.dashboard,
+             run_id,
+             limit,
+             settings.schedule_version,
+-            datetime.now(UTC),
++            clock,
++            settings.clock_mode == "replay",
+         )
+         return {
+             **data,
+-            "server_time": datetime.now(UTC),
++            "server_time": clock,
++            "wall_time": wall_time,
++            "clock_mode": settings.clock_mode,
+             "profile": "local",
+             "ml": "configured" if settings.ml_url else "disabled",
+         }
+@@ -381,9 +419,13 @@ def create_app(settings: Settings | None = None):
+     async def cycle_history(
+         request: Request, run_id: str = settings.run_id, limit: Limit = 50
+     ):
++        clock = await effective_time(request, run_id)
+         return {
+             "items": await asyncio.to_thread(
+-                request.app.state.store.cycles, run_id, limit
++                request.app.state.store.cycles,
++                run_id,
++                limit,
++                clock if settings.clock_mode == "replay" else None,
+             )
+         }
+ 
+@@ -422,16 +464,43 @@ def create_app(settings: Settings | None = None):
+         limit: Limit = 50,
+         offset: Offset = 0,
+     ):
++        clock = await effective_time(request, run_id)
+         return {
+             "items": await asyncio.to_thread(
+-                request.app.state.store.predictions, run_id, tr_id, limit, offset
++                request.app.state.store.predictions,
++                run_id,
++                tr_id,
++                limit,
++                offset,
++                clock if settings.clock_mode == "replay" else None,
+             )
+         }
+ 
++    @router.put("/replay-clock")
++    async def replay_clock(
++        body: ReplayClock,
++        request: Request,
++        run_id: str = settings.run_id,
++    ):
++        if settings.clock_mode != "replay":
++            raise HTTPException(409, "replay_clock_disabled")
++        value = await asyncio.to_thread(
++            request.app.state.store.set_run_clock, run_id, body.as_of
++        )
++        return {"run_id": run_id, "as_of": value}
++
+     @router.post("/prediction-cycles", status_code=202)
+     async def cycle(body: Cycle, request: Request):
+-        if body.as_of and body.as_of > datetime.now(UTC) + timedelta(seconds=5):
++        if (
++            settings.clock_mode != "replay"
++            and body.as_of
++            and body.as_of > datetime.now(UTC) + timedelta(seconds=5)
++        ):
+             raise HTTPException(422, "future_cycle")
++        if settings.clock_mode == "replay" and body.as_of is not None:
++            await asyncio.to_thread(
++                request.app.state.store.set_run_clock, settings.run_id, body.as_of
++            )
+         rid = await request.app.state.worker.prepare(body.as_of)
+         return {"request_id": rid, "status": "queued" if rid else "no_target"}
+ 
+diff --git a/services/backend/src/backend/config.py b/services/backend/src/backend/config.py
+index 9c67b26..4f716fa 100644
+--- a/services/backend/src/backend/config.py
++++ b/services/backend/src/backend/config.py
+@@ -1,3 +1,5 @@
++from typing import Literal
++
+ from pydantic import Field, field_validator
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+ 
+@@ -14,6 +16,7 @@ class Settings(BaseSettings):
+     schedule_version: str = "default"
+     ml_url: str | None = None
+     prediction_interval: float = Field(default=30, ge=0.1)
++    clock_mode: Literal["wall", "replay"] = "wall"
+     ml_timeout: float = Field(default=8, gt=0, le=8)
+     max_pending: int = Field(default=10000, ge=1)
+     history_seconds: int = Field(default=1800, ge=60, le=86400)
+diff --git a/services/processing-worker/src/processing_worker/worker.py b/services/processing-worker/src/processing_worker/worker.py
+index 36a46fa..de7a779 100644
+--- a/services/processing-worker/src/processing_worker/worker.py
++++ b/services/processing-worker/src/processing_worker/worker.py
+@@ -48,9 +48,19 @@ class Worker:
+             except TimeoutError:
+                 pass
+ 
++    async def _clock(self):
++        if self.settings.clock_mode != "replay":
++            return datetime.now(UTC)
++        raw = await asyncio.to_thread(self.store.run_clock, self.settings.run_id)
++        if raw is None:
++            return None
++        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
++
+     async def prepare(self, as_of=None):
+         async with self.cycle_lock:
+-            clock = as_of or datetime.now(UTC)
++            clock = as_of or await self._clock()
++            if clock is None:
++                return None
+             try:
+                 if await asyncio.to_thread(self.store.pending_batches):
+                     raise Backpressure("prediction_cycle_pending")
+@@ -186,6 +196,30 @@ class Worker:
+                 pass
+ 
+     async def schedule(self):
++        if self.settings.clock_mode == "replay":
++            last_clock = None
++            while not self.stopping.is_set():
++                try:
++                    await asyncio.wait_for(self.stopping.wait(), timeout=0.1)
++                    continue
++                except TimeoutError:
++                    pass
++                try:
++                    clock = await self._clock()
++                    if clock is None:
++                        continue
++                    if last_clock is None or clock < last_clock:
++                        last_clock = clock - timedelta(seconds=self.settings.prediction_interval)
++                    if (clock - last_clock).total_seconds() < self.settings.prediction_interval:
++                        continue
++                    await self.prepare(clock)
++                    last_clock = clock
++                except Backpressure:
++                    log.warning("prediction_cycle_skipped: backlog or input limit")
++                except Exception:
++                    log.exception("prediction_schedule_failure")
++            return
++
+         while not self.stopping.is_set():
+             try:
+                 await asyncio.wait_for(
+diff --git a/tests/integration/test_api.py b/tests/integration/test_api.py
+index ae5b38d..5cf48e5 100644
+--- a/tests/integration/test_api.py
++++ b/tests/integration/test_api.py
+@@ -159,3 +159,90 @@ def test_nonfinite_nested_metadata_is_rejected_before_storage(client):
+         headers={**HEADERS, "Content-Type": "application/json"},
+     )
+     assert response.status_code == 422
++
++
++def test_replay_mode_uses_virtual_clock_and_causal_dashboard(tmp_path):
++    app = create_app(
++        Settings(
++            db_path=str(tmp_path / "replay.db"),
++            api_token=TOKEN,
++            ndtp_port=0,
++            run_id="replay",
++            schedule_version="validation",
++            clock_mode="replay",
++            prediction_interval=3600,
++        )
++    )
++    old = datetime(2026, 1, 6, 9, 30, tzinfo=UTC)
++    later = old + timedelta(minutes=10)
++    with TestClient(app) as c:
++        c.put("/api/v1/devices/42", json={"tr_id": "bus"}, headers=HEADERS)
++        for eid, when, speed in (("old", old, 10), ("later", later, 40)):
++            body = payload(eid)
++            body.update(
++                run_id="replay",
++                source="replay",
++                event_time=when.isoformat(),
++                receive_time=when.isoformat(),
++                ingested_at=when.isoformat(),
++                speed_kmh=speed,
++            )
++            assert c.post("/api/v1/telemetry", json=body, headers=HEADERS).status_code == 202
++
++        # Rewind the replay clock without deleting later stored telemetry.
++        response = c.put(
++            "/api/v1/replay-clock",
++            json={"as_of": old.isoformat()},
++            headers=HEADERS,
++        )
++        assert response.status_code == 200
++        assert response.json()["run_id"] == "replay"
++        dashboard = c.get("/api/v1/dashboard?run_id=replay", headers=HEADERS).json()
++        assert dashboard["clock_mode"] == "replay"
++        assert datetime.fromisoformat(dashboard["server_time"]) == old
++        assert dashboard["counts"]["events"] == 1
++        assert dashboard["vehicles"][0]["speed_kmh"] == 10
++
++
++def test_replay_scheduler_follows_virtual_clock_without_wall_time(tmp_path):
++    app = create_app(
++        Settings(
++            db_path=str(tmp_path / "replay-scheduler.db"),
++            api_token=TOKEN,
++            ndtp_port=0,
++            run_id="replay-auto",
++            schedule_version="validation",
++            clock_mode="replay",
++            prediction_interval=30,
++        )
++    )
++    t = datetime(2026, 1, 6, 9, 30, tzinfo=UTC)
++    with TestClient(app) as c:
++        c.put("/api/v1/devices/42", json={"tr_id": "bus"}, headers=HEADERS)
++        visit = {
++            "schedule_version": "validation",
++            "stop_visit_id": "stop",
++            "tr_id": "bus",
++            "time_begin": (t + timedelta(minutes=12)).isoformat(),
++        }
++        c.post("/api/v1/schedules", json=[visit], headers=HEADERS)
++        body = payload("replay-auto-event")
++        body.update(
++            run_id="replay-auto",
++            source="replay",
++            event_time=t.isoformat(),
++            receive_time=t.isoformat(),
++            ingested_at=t.isoformat(),
++        )
++        c.post("/api/v1/telemetry", json=body, headers=HEADERS)
++
++        items = []
++        for _ in range(100):
++            items = c.get(
++                "/api/v1/predictions?run_id=replay-auto", headers=HEADERS
++            ).json()["items"]
++            if items:
++                break
++            time.sleep(0.02)
++        assert len(items) == 1
++        assert datetime.fromisoformat(items[0]["as_of"].replace("Z", "+00:00")) == t
+diff --git a/tests/integration/test_csv_tools.py b/tests/integration/test_csv_tools.py
+index bb02e3f..8fcff32 100644
+--- a/tests/integration/test_csv_tools.py
++++ b/tests/integration/test_csv_tools.py
+@@ -127,3 +127,72 @@ def test_invalid_coordinate_pair_is_null_with_quality_flag():
+     assert event["lat"] is None and event["lon"] is None
+     assert event["location_valid"] is False
+     assert "invalid_position" in event["quality_flags"]
++
++
++def test_replay_orders_by_receive_time_and_preserves_delivery_lag(tmp_path):
++    path = tmp_path / "traffic.csv"
++    path.write_text(
++        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
++        "late,1,2026-01-06 00:00:00,2026-01-06 00:10:00,True,37.6,55.7\n"
++        "early,2,2026-01-06 00:05:00,2026-01-06 00:05:01,True,37.7,55.8\n",
++        encoding="utf-8",
++    )
++
++    events = list(replay.iter_traffic_events(path, "r", "UTC"))
++
++    assert [event["tr_id"] for event in events] == ["early", "late"]
++    assert events[0]["event_time"] == "2026-01-06T00:05:00+00:00"
++    assert events[0]["receive_time"] == "2026-01-06T00:05:01+00:00"
++    assert "receive_time_assumed" not in events[0]["quality_flags"]
++
++
++def test_replay_limit_applies_after_virtual_time_ordering(tmp_path):
++    path = tmp_path / "traffic.csv"
++    path.write_text(
++        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
++        "later,1,2026-01-06T00:10:00Z,2026-01-06T00:10:00Z,True,37.6,55.7\n"
++        "first,2,2026-01-06T00:00:00Z,2026-01-06T00:00:00Z,True,37.7,55.8\n",
++        encoding="utf-8",
++    )
++
++    events = list(replay.iter_traffic_events(path, "r", None, limit=1))
++
++    assert [event["tr_id"] for event in events] == ["first"]
++
++
++def test_replay_time_window_filters_after_global_ordering(tmp_path):
++    path = tmp_path / "traffic.csv"
++    path.write_text(
++        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
++        "a,1,2026-01-06 12:10:00,2026-01-06 12:10:00,True,37.6,55.7\n"
++        "b,2,2026-01-06 12:00:00,2026-01-06 12:00:00,True,37.7,55.8\n"
++        "c,3,2026-01-06 12:20:00,2026-01-06 12:20:00,True,37.8,55.9\n",
++        encoding="utf-8",
++    )
++
++    events = list(
++        replay.iter_traffic_events(
++            path,
++            "r",
++            "Europe/Moscow",
++            from_time="2026-01-06 12:05:00",
++            until_time="2026-01-06 12:15:00",
++        )
++    )
++
++    assert [event["tr_id"] for event in events] == ["a"]
++
++
++def test_replay_can_mark_history_warmup_without_advancing_clock(tmp_path):
++    path = tmp_path / "traffic.csv"
++    path.write_text(
++        "tr_id,unit_id,event_time,receive_time,location_valid,lon,lat\n"
++        "a,1,2026-01-06T00:00:00Z,2026-01-06T00:00:01Z,True,37.6,55.7\n",
++        encoding="utf-8",
++    )
++
++    event = next(
++        replay.iter_traffic_events(path, "r", None, advance_clock=False)
++    )
++
++    assert event["source_identity"]["advance_clock"] is False
+diff --git a/tests/integration/test_store.py b/tests/integration/test_store.py
+index 3ba5abc..a318e4c 100644
+--- a/tests/integration/test_store.py
++++ b/tests/integration/test_store.py
+@@ -167,3 +167,57 @@ def test_delayed_good_fix_can_advance_position_without_rolling_back_latest_packe
+     assert result["event_time"] == bad["event_time"]
+     assert result["position_time"] == delayed["event_time"]
+     assert result["lat"] == 55.8
++
++
++def test_replay_clock_and_causal_snapshot_do_not_leak_future_telemetry(store):
++    first = event("r1")
++    first["run_id"] = "replay"
++    first["event_time"] = (NOW - timedelta(minutes=5)).isoformat()
++    first["receive_time"] = first["event_time"]
++    first["speed_kmh"] = 10
++    second = event("r2")
++    second["run_id"] = "replay"
++    second["event_time"] = (NOW + timedelta(minutes=5)).isoformat()
++    second["receive_time"] = second["event_time"]
++    second["speed_kmh"] = 40
++    second["lat"] = 55.8
++
++    store.enqueue(first)
++    store.enqueue(second)
++    store.process_pending()
++    store.set_run_clock("replay", NOW)
++
++    assert store.run_clock("replay") == NOW.isoformat()
++    snap = store.snapshot_at("replay", NOW, 50)
++    assert snap["counts"] == {"vehicles": 1, "events": 1, "pending": 0}
++    assert snap["vehicles"][0]["speed_kmh"] == 10
++    assert snap["vehicles"][0]["lat"] == 55.7
++
++    later = store.snapshot_at("replay", NOW + timedelta(minutes=6), 50)
++    assert later["counts"]["events"] == 2
++    assert later["vehicles"][0]["speed_kmh"] == 40
++    assert later["vehicles"][0]["lat"] == 55.8
++
++
++def test_replay_duplicate_can_advance_clock_after_rewind(store):
++    replay = event("duplicate-clock")
++    replay["run_id"] = "replay"
++    replay["source"] = "replay"
++    replay["event_time"] = NOW.isoformat()
++    replay["receive_time"] = NOW.isoformat()
++    replay["source_identity"] = {"advance_clock": True}
++
++    assert store.enqueue(replay) is True
++    store.set_run_clock("replay", NOW - timedelta(minutes=1))
++    assert store.enqueue(replay) is False
++    assert store.run_clock("replay") == NOW.isoformat()
++
++
++def test_replay_warmup_does_not_advance_clock(store):
++    replay = event("warmup")
++    replay["run_id"] = "replay"
++    replay["source"] = "replay"
++    replay["source_identity"] = {"advance_clock": False}
++
++    assert store.enqueue(replay) is True
++    assert store.run_clock("replay") is None
+diff --git a/tools/csv-replay/README.md b/tools/csv-replay/README.md
+index 1b350f6..e2c5ce9 100644
+--- a/tools/csv-replay/README.md
++++ b/tools/csv-replay/README.md
+@@ -1,23 +1,44 @@
+ # tools/csv-replay
+ 
+-Воспроизведение исторической телеметрии с управляемыми часами.
++Воспроизведение исторической телеметрии через тот же backend API, что и обычный поток.
+ 
+-Статус: документированный каркас. Реализация и запуск пока отсутствуют.
++Replay сохраняет исходные `event_time` и `receive_time`, сортирует события по моменту доступности `receive_time` и двигает виртуальные часы запуска. Если `receive_time` отсутствует, используется `event_time` и добавляется `receive_time_assumed`. `--speed=1` идет в исходном темпе, `--speed=10` ускоряет предметное время в 10 раз, `--speed=0` отправляет без ожиданий.
+ 
+-## Входы, выходы и зависимости
++Для backend в replay-режиме задайте:
+ 
+-Вход: CSV, версия данных и параметры запуска; выход: события Kafka по общему контракту.
++```env
++TRANSPORT_RUN_ID=validation-demo
++TRANSPORT_SCHEDULE_VERSION=validation
++TRANSPORT_CLOCK_MODE=replay
++TRANSPORT_PREDICTION_INTERVAL=60
++TRANSPORT_ML_URL=http://127.0.0.1:8090
++```
+ 
+-## Границы ответственности
++`TRANSPORT_PREDICTION_INTERVAL=60` согласован с текущим окном актуальности прогноза 90 секунд: dashboard не будет терять покрытие между соседними минутными пересчетами.
+ 
+-Не заполняет UI или таблицы прогнозов в обход worker; учитывает доступность сведений на момент воспроизведения.
++Для визуального demo проще использовать готовый сценарий:
+ 
+-## Будущие проверки
++```bash
++scripts/dev/run-replay-demo.sh
++```
+ 
+-Детерминированность событий, изоляция run_id и повторное воспроизведение.
++Он сначала загружает 30 минут истории с `--no-advance-clock`, затем выставляет виртуальное время на `06.01.2026 12:30 MSK` и примерно за 90 реальных секунд проигрывает 15 виртуальных минут. Scheduler автоматически запускает около 15 prediction cycles, а UI на `http://127.0.0.1:8000/` в потоке из `TRANSPORT_RUN_ID` показывает движение, свежесть и прогнозы относительно виртуального времени.
+ 
+-## Связанные документы
++Ручной запуск анимированной части:
+ 
+-- [Карта проекта](../../README.md)
+-- [Техническое задание](../../docs/superpowers/specs/2026-09-25-transport-delay-system-design.md)
+-- [Родительский раздел](../README.md)
++```bash
++set -a; source .env; set +a
++
++.venv/bin/python tools/csv-replay/replay.py \
++  dataset/validate/traffic.csv \
++  --base-url http://127.0.0.1:8000 \
++  --timezone Europe/Moscow \
++  --run-id "$TRANSPORT_RUN_ID" \
++  --from-time "2026-01-06 12:30:00.000001" \
++  --until-time "2026-01-06 12:44:59.999999" \
++  --speed 10
++```
++
++`--no-advance-clock` нужен для pre-roll/warm-up: события сохраняются и доступны модели как история, но не двигают виртуальное `now`. `--limit` применяется после сортировки и фильтрации по виртуальному времени.
++
++Повтор тех же строк безопасен: `event_id` делает телеметрию идемпотентной. После явного отката `/api/v1/replay-clock` повтор уже сохраненных replay-событий снова двигает виртуальные часы, не создавая дубли telemetry.
+diff --git a/tools/csv-replay/replay.py b/tools/csv-replay/replay.py
+index 4b8628d..13bc3ca 100644
+--- a/tools/csv-replay/replay.py
++++ b/tools/csv-replay/replay.py
+@@ -63,6 +63,7 @@ def parse_traffic_row(
+     file_digest: str,
+     row_number: int,
+     timezone_name: str | None,
++    advance_clock: bool = True,
+ ) -> dict:
+     tr_id = (row.get("tr_id") or "").strip()
+     unit_id = (row.get("unit_id") or "").strip()
+@@ -72,7 +73,13 @@ def parse_traffic_row(
+         raise ValueError(
+             "unit_id is missing; replay needs the CSV's explicit unit_id for device binding"
+         )
+-    event_time = parse_time(row.get("event_time") or "", timezone_name).isoformat()
++    event_dt = parse_time(row.get("event_time") or "", timezone_name)
++    event_time = event_dt.isoformat()
++    receive_raw = (row.get("receive_time") or "").strip()
++    if receive_raw:
++        receive_dt = parse_time(receive_raw, timezone_name)
++    else:
++        receive_dt = event_dt
+ 
+     source_valid = _bool_value(row.get("location_valid"))
+     lon = _float_or_none(row.get("lon"))
+@@ -99,6 +106,9 @@ def parse_traffic_row(
+     if row.get("heading", "").strip() and heading is None:
+         flags.append("heading_unparseable")
+ 
++    if not receive_raw:
++        flags.append("receive_time_assumed")
++
+     return {
+         "schema_version": "1",
+         "run_id": run_id,
+@@ -107,7 +117,7 @@ def parse_traffic_row(
+         "tr_id": tr_id,
+         "unit_id": unit_id,
+         "event_time": event_time,
+-        "receive_time": event_time,
++        "receive_time": receive_dt.isoformat(),
+         "ingested_at": datetime.now(UTC).isoformat(),
+         "lat": lat,
+         "lon": lon,
+@@ -115,7 +125,11 @@ def parse_traffic_row(
+         "heading_deg": heading,
+         "location_valid": location_valid,
+         "quality_flags": flags,
+-        "source_identity": {"file_sha256": file_digest, "row_number": row_number},
++        "source_identity": {
++            "file_sha256": file_digest,
++            "row_number": row_number,
++            "advance_clock": advance_clock,
++        },
+     }
+ 
+ 
+@@ -128,12 +142,23 @@ def file_sha256(path: str | Path) -> str:
+ 
+ 
+ def iter_traffic_events(
+-    path: str | Path, run_id: str, timezone_name: str | None, limit: int | None = None
++    path: str | Path,
++    run_id: str,
++    timezone_name: str | None,
++    limit: int | None = None,
++    from_time: str | None = None,
++    until_time: str | None = None,
++    advance_clock: bool = True,
+ ) -> Iterator[dict]:
+-    """Yield normalized events in source order without materializing the file."""
++    """Yield events in virtual availability order (receive_time, then source row)."""
+     if limit is not None and limit < 1:
+         raise ValueError("limit must be positive")
++    start = parse_time(from_time, timezone_name) if from_time else None
++    end = parse_time(until_time, timezone_name) if until_time else None
++    if start is not None and end is not None and start > end:
++        raise ValueError("--from-time must not be after --until-time")
+     digest = file_sha256(path)
++    events: list[dict] = []
+     with Path(path).open("r", encoding="utf-8-sig", newline="") as stream:
+         reader = csv.DictReader(stream)
+         required = {"tr_id", "unit_id", "event_time", "location_valid", "lon", "lat"}
+@@ -143,12 +168,33 @@ def iter_traffic_events(
+                 "traffic CSV is missing required columns: " + ", ".join(missing)
+             )
+         for row_number, row in enumerate(reader, start=1):
+-            if limit is not None and row_number > limit:
+-                break
+             try:
+-                yield parse_traffic_row(row, run_id, digest, row_number, timezone_name)
++                events.append(
++                    parse_traffic_row(
++                        row,
++                        run_id,
++                        digest,
++                        row_number,
++                        timezone_name,
++                        advance_clock,
++                    )
++                )
+             except ValueError as exc:
+                 raise ValueError(f"{path}: data row {row_number}: {exc}") from exc
++    events.sort(
++        key=lambda event: (
++            event["receive_time"],
++            event["source_identity"]["row_number"],
++        )
++    )
++    if start is not None:
++        start_iso = start.isoformat()
++        events = [event for event in events if event["receive_time"] >= start_iso]
++    if end is not None:
++        end_iso = end.isoformat()
++        events = [event for event in events if event["receive_time"] <= end_iso]
++    selected = events if limit is None else events[:limit]
++    yield from selected
+ 
+ 
+ def _request_with_503_retry(
+@@ -172,6 +218,9 @@ def replay_csv(
+     timezone_name: str | None,
+     limit: int | None = None,
+     speed: float = 0,
++    from_time: str | None = None,
++    until_time: str | None = None,
++    advance_clock: bool = True,
+ ) -> int:
+     if speed < 0 or not math.isfinite(speed):
+         raise ValueError("speed must be a finite number greater than or equal to 0")
+@@ -181,8 +230,16 @@ def replay_csv(
+     count = 0
+     prior_time: datetime | None = None
+     with httpx.Client(timeout=30.0, headers=headers) as client:
+-        for event in iter_traffic_events(path, run_id, timezone_name, limit):
+-            current_time = parse_time(event["event_time"], "UTC")
++        for event in iter_traffic_events(
++            path,
++            run_id,
++            timezone_name,
++            limit,
++            from_time,
++            until_time,
++            advance_clock,
++        ):
++            current_time = parse_time(event["receive_time"], "UTC")
+             if speed > 0 and prior_time is not None:
+                 delay = max(0.0, (current_time - prior_time).total_seconds()) / speed
+                 if delay:
+@@ -206,14 +263,17 @@ def replay_csv(
+             )
+             count += 1
+             if count % 100 == 0:
+-                print(f"Replayed {count} rows", file=sys.stderr)
++                print(
++                    f"Replayed {count} rows · virtual time {current_time.isoformat()}",
++                    file=sys.stderr,
++                )
+     return count
+ 
+ 
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(
+         description=__doc__
+-        + " Original event_time is preserved and receive_time uses the virtual source clock; replay creates a separate run, so the normal scheduler will not project this run unless separately configured."
++        + " Events are replayed in receive_time order. Original event_time is preserved; if receive_time is absent it falls back to event_time with a quality flag."
+     )
+     parser.add_argument("csv", type=Path, help="traffic.csv")
+     parser.add_argument(
+@@ -229,7 +289,20 @@ def main(argv: list[str] | None = None) -> int:
+         help="IANA timezone used only for timestamps without an offset; required if any event_time is naive",
+     )
+     parser.add_argument(
+-        "--limit", type=int, help="maximum number of CSV data rows to send"
++        "--limit", type=int, help="maximum number of events after virtual-time sorting/filtering"
++    )
++    parser.add_argument(
++        "--from-time",
++        help="start receive_time (inclusive); naive values use --timezone",
++    )
++    parser.add_argument(
++        "--until-time",
++        help="end receive_time (inclusive); naive values use --timezone",
++    )
++    parser.add_argument(
++        "--no-advance-clock",
++        action="store_true",
++        help="load telemetry without moving the replay clock (useful for history warm-up)",
+     )
+     parser.add_argument(
+         "--speed",
+@@ -250,6 +323,9 @@ def main(argv: list[str] | None = None) -> int:
+             args.timezone,
+             args.limit,
+             args.speed,
++            args.from_time,
++            args.until_time,
++            not args.no_advance_clock,
+         )
+     except (OSError, ValueError, httpx.HTTPError) as exc:
+         print(f"CSV replay failed: {exc}", file=sys.stderr)

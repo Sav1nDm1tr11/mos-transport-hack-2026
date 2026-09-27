@@ -63,6 +63,7 @@ def parse_traffic_row(
     file_digest: str,
     row_number: int,
     timezone_name: str | None,
+    advance_clock: bool = True,
 ) -> dict:
     tr_id = (row.get("tr_id") or "").strip()
     unit_id = (row.get("unit_id") or "").strip()
@@ -72,7 +73,13 @@ def parse_traffic_row(
         raise ValueError(
             "unit_id is missing; replay needs the CSV's explicit unit_id for device binding"
         )
-    event_time = parse_time(row.get("event_time") or "", timezone_name).isoformat()
+    event_dt = parse_time(row.get("event_time") or "", timezone_name)
+    event_time = event_dt.isoformat()
+    receive_raw = (row.get("receive_time") or "").strip()
+    if receive_raw:
+        receive_dt = parse_time(receive_raw, timezone_name)
+    else:
+        receive_dt = event_dt
 
     source_valid = _bool_value(row.get("location_valid"))
     lon = _float_or_none(row.get("lon"))
@@ -99,6 +106,9 @@ def parse_traffic_row(
     if row.get("heading", "").strip() and heading is None:
         flags.append("heading_unparseable")
 
+    if not receive_raw:
+        flags.append("receive_time_assumed")
+
     return {
         "schema_version": "1",
         "run_id": run_id,
@@ -107,7 +117,7 @@ def parse_traffic_row(
         "tr_id": tr_id,
         "unit_id": unit_id,
         "event_time": event_time,
-        "receive_time": event_time,
+        "receive_time": receive_dt.isoformat(),
         "ingested_at": datetime.now(UTC).isoformat(),
         "lat": lat,
         "lon": lon,
@@ -115,7 +125,11 @@ def parse_traffic_row(
         "heading_deg": heading,
         "location_valid": location_valid,
         "quality_flags": flags,
-        "source_identity": {"file_sha256": file_digest, "row_number": row_number},
+        "source_identity": {
+            "file_sha256": file_digest,
+            "row_number": row_number,
+            "advance_clock": advance_clock,
+        },
     }
 
 
@@ -128,12 +142,23 @@ def file_sha256(path: str | Path) -> str:
 
 
 def iter_traffic_events(
-    path: str | Path, run_id: str, timezone_name: str | None, limit: int | None = None
+    path: str | Path,
+    run_id: str,
+    timezone_name: str | None,
+    limit: int | None = None,
+    from_time: str | None = None,
+    until_time: str | None = None,
+    advance_clock: bool = True,
 ) -> Iterator[dict]:
-    """Yield normalized events in source order without materializing the file."""
+    """Yield events in virtual availability order (receive_time, then source row)."""
     if limit is not None and limit < 1:
         raise ValueError("limit must be positive")
+    start = parse_time(from_time, timezone_name) if from_time else None
+    end = parse_time(until_time, timezone_name) if until_time else None
+    if start is not None and end is not None and start > end:
+        raise ValueError("--from-time must not be after --until-time")
     digest = file_sha256(path)
+    events: list[dict] = []
     with Path(path).open("r", encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
         required = {"tr_id", "unit_id", "event_time", "location_valid", "lon", "lat"}
@@ -143,12 +168,33 @@ def iter_traffic_events(
                 "traffic CSV is missing required columns: " + ", ".join(missing)
             )
         for row_number, row in enumerate(reader, start=1):
-            if limit is not None and row_number > limit:
-                break
             try:
-                yield parse_traffic_row(row, run_id, digest, row_number, timezone_name)
+                events.append(
+                    parse_traffic_row(
+                        row,
+                        run_id,
+                        digest,
+                        row_number,
+                        timezone_name,
+                        advance_clock,
+                    )
+                )
             except ValueError as exc:
                 raise ValueError(f"{path}: data row {row_number}: {exc}") from exc
+    events.sort(
+        key=lambda event: (
+            event["receive_time"],
+            event["source_identity"]["row_number"],
+        )
+    )
+    if start is not None:
+        start_iso = start.isoformat()
+        events = [event for event in events if event["receive_time"] >= start_iso]
+    if end is not None:
+        end_iso = end.isoformat()
+        events = [event for event in events if event["receive_time"] <= end_iso]
+    selected = events if limit is None else events[:limit]
+    yield from selected
 
 
 def _request_with_503_retry(
@@ -172,6 +218,9 @@ def replay_csv(
     timezone_name: str | None,
     limit: int | None = None,
     speed: float = 0,
+    from_time: str | None = None,
+    until_time: str | None = None,
+    advance_clock: bool = True,
 ) -> int:
     if speed < 0 or not math.isfinite(speed):
         raise ValueError("speed must be a finite number greater than or equal to 0")
@@ -181,8 +230,16 @@ def replay_csv(
     count = 0
     prior_time: datetime | None = None
     with httpx.Client(timeout=30.0, headers=headers) as client:
-        for event in iter_traffic_events(path, run_id, timezone_name, limit):
-            current_time = parse_time(event["event_time"], "UTC")
+        for event in iter_traffic_events(
+            path,
+            run_id,
+            timezone_name,
+            limit,
+            from_time,
+            until_time,
+            advance_clock,
+        ):
+            current_time = parse_time(event["receive_time"], "UTC")
             if speed > 0 and prior_time is not None:
                 delay = max(0.0, (current_time - prior_time).total_seconds()) / speed
                 if delay:
@@ -206,14 +263,17 @@ def replay_csv(
             )
             count += 1
             if count % 100 == 0:
-                print(f"Replayed {count} rows", file=sys.stderr)
+                print(
+                    f"Replayed {count} rows · virtual time {current_time.isoformat()}",
+                    file=sys.stderr,
+                )
     return count
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__
-        + " Original event_time is preserved and receive_time uses the virtual source clock; replay creates a separate run, so the normal scheduler will not project this run unless separately configured."
+        + " Events are replayed in receive_time order. Original event_time is preserved; if receive_time is absent it falls back to event_time with a quality flag."
     )
     parser.add_argument("csv", type=Path, help="traffic.csv")
     parser.add_argument(
@@ -229,7 +289,20 @@ def main(argv: list[str] | None = None) -> int:
         help="IANA timezone used only for timestamps without an offset; required if any event_time is naive",
     )
     parser.add_argument(
-        "--limit", type=int, help="maximum number of CSV data rows to send"
+        "--limit", type=int, help="maximum number of events after virtual-time sorting/filtering"
+    )
+    parser.add_argument(
+        "--from-time",
+        help="start receive_time (inclusive); naive values use --timezone",
+    )
+    parser.add_argument(
+        "--until-time",
+        help="end receive_time (inclusive); naive values use --timezone",
+    )
+    parser.add_argument(
+        "--no-advance-clock",
+        action="store_true",
+        help="load telemetry without moving the replay clock (useful for history warm-up)",
     )
     parser.add_argument(
         "--speed",
@@ -250,6 +323,9 @@ def main(argv: list[str] | None = None) -> int:
             args.timezone,
             args.limit,
             args.speed,
+            args.from_time,
+            args.until_time,
+            not args.no_advance_clock,
         )
     except (OSError, ValueError, httpx.HTTPError) as exc:
         print(f"CSV replay failed: {exc}", file=sys.stderr)

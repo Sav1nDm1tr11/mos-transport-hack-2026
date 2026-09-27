@@ -50,7 +50,7 @@ class Store:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             self.db.close()
             raise RuntimeError("unsupported_database_version")
         self.db.executescript("""
@@ -61,6 +61,8 @@ class Store:
           receive_time TEXT NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL,
           processed INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,event_id));
         CREATE INDEX IF NOT EXISTS telemetry_vehicle ON telemetry(run_id,tr_id,event_time);
+        CREATE INDEX IF NOT EXISTS telemetry_availability ON telemetry(run_id,receive_time,event_time);
+        CREATE INDEX IF NOT EXISTS telemetry_vehicle_availability ON telemetry(run_id,tr_id,receive_time,event_time);
         CREATE INDEX IF NOT EXISTS telemetry_pending ON telemetry(processed,seq);
         CREATE TABLE IF NOT EXISTS states(run_id TEXT, tr_id TEXT, body TEXT NOT NULL,
           PRIMARY KEY(run_id,tr_id));
@@ -79,7 +81,9 @@ class Store:
           run_id TEXT, type TEXT, entity_id TEXT, created_at TEXT, body TEXT);
         CREATE TABLE IF NOT EXISTS prediction_cycles(
           id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, body TEXT NOT NULL);
-        PRAGMA user_version=1;
+        CREATE TABLE IF NOT EXISTS run_clocks(
+          run_id TEXT PRIMARY KEY, as_of TEXT NOT NULL, updated_at TEXT NOT NULL);
+        PRAGMA user_version=2;
         """)
         self.db.commit()
 
@@ -102,6 +106,149 @@ class Store:
         with self.lock:
             return self.db.execute("SELECT 1").fetchone()[0] == 1
 
+    def set_run_clock(self, run_id, as_of):
+        """Set the domain clock for a replay run. Wall-clock metadata stays separate."""
+        value = timestamp(as_of)
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO run_clocks(run_id,as_of,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET as_of=excluded.as_of,updated_at=excluded.updated_at",
+                (run_id, value, now()),
+            )
+            self._change(db, run_id, "clock.updated", run_id, {"as_of": value})
+        return value
+
+    def run_clock(self, run_id):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT as_of FROM run_clocks WHERE run_id=?", (run_id,)
+            ).fetchone()
+            return row[0] if row else None
+
+    def latest_telemetry_time(self, run_id):
+        """Latest availability time, used only to bootstrap an existing replay DB."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT max(receive_time) FROM telemetry WHERE run_id=?", (run_id,)
+            ).fetchone()
+            return row[0] if row and row[0] else None
+
+    def vehicle_at(self, run_id, tr_id, as_of):
+        """Reconstruct one causal vehicle state at ``as_of``."""
+        cutoff = timestamp(as_of)
+        with self.lock:
+            latest = self.db.execute(
+                "SELECT body FROM telemetry WHERE run_id=? AND tr_id=? "
+                "AND event_time<=? AND receive_time<=? "
+                "ORDER BY event_time DESC,seq DESC LIMIT 1",
+                (run_id, tr_id, cutoff, cutoff),
+            ).fetchone()
+            if latest is None:
+                return None
+            position = self.db.execute(
+                "SELECT body FROM telemetry WHERE run_id=? AND tr_id=? "
+                "AND event_time<=? AND receive_time<=? "
+                "AND json_extract(body,'$.location_valid')=1 "
+                "AND json_extract(body,'$.lat') IS NOT NULL AND json_extract(body,'$.lon') IS NOT NULL "
+                "ORDER BY event_time DESC,seq DESC LIMIT 1",
+                (run_id, tr_id, cutoff, cutoff),
+            ).fetchone()
+        event = json.loads(latest[0])
+        good = json.loads(position[0]) if position else None
+        return dict(
+            run_id=run_id,
+            tr_id=tr_id,
+            entity_version=0,
+            event_time=event["event_time"],
+            receive_time=event["receive_time"],
+            unit_id=event["unit_id"],
+            speed_kmh=event.get("speed_kmh"),
+            heading_deg=event.get("heading_deg"),
+            location_valid=event.get("location_valid", False),
+            quality_flags=event.get("quality_flags", []),
+            lat=good.get("lat") if good else None,
+            lon=good.get("lon") if good else None,
+            position_time=good.get("event_time") if good else None,
+        )
+
+    def vehicles_at(self, run_id, as_of, limit=50, offset=0):
+        """Reconstruct a causal vehicle snapshot at ``as_of`` for replay UI."""
+        cutoff = timestamp(as_of)
+        with self.lock:
+            latest = self.db.execute(
+                "WITH ranked AS ("
+                " SELECT tr_id,body,row_number() OVER (PARTITION BY tr_id ORDER BY event_time DESC,seq DESC) AS rn"
+                " FROM telemetry WHERE run_id=? AND event_time<=? AND receive_time<=?"
+                ") SELECT tr_id,body FROM ranked WHERE rn=1 ORDER BY tr_id LIMIT ? OFFSET ?",
+                (run_id, cutoff, cutoff, limit, offset),
+            ).fetchall()
+            if not latest:
+                return []
+            tr_ids = [r["tr_id"] for r in latest]
+            placeholders = ",".join("?" for _ in tr_ids)
+            positions = self.db.execute(
+                "WITH ranked AS ("
+                " SELECT tr_id,body,row_number() OVER (PARTITION BY tr_id ORDER BY event_time DESC,seq DESC) AS rn"
+                " FROM telemetry WHERE run_id=? AND event_time<=? AND receive_time<=?"
+                " AND json_extract(body,'$.location_valid')=1"
+                " AND json_extract(body,'$.lat') IS NOT NULL AND json_extract(body,'$.lon') IS NOT NULL"
+                f") SELECT tr_id,body FROM ranked WHERE rn=1 AND tr_id IN ({placeholders})",
+                (run_id, cutoff, cutoff, *tr_ids),
+            ).fetchall()
+        position_by_tr = {r["tr_id"]: json.loads(r["body"]) for r in positions}
+        result = []
+        for row in latest:
+            event = json.loads(row["body"])
+            position = position_by_tr.get(row["tr_id"])
+            result.append(
+                dict(
+                    run_id=run_id,
+                    tr_id=row["tr_id"],
+                    entity_version=0,
+                    event_time=event["event_time"],
+                    receive_time=event["receive_time"],
+                    unit_id=event["unit_id"],
+                    speed_kmh=event.get("speed_kmh"),
+                    heading_deg=event.get("heading_deg"),
+                    location_valid=event.get("location_valid", False),
+                    quality_flags=event.get("quality_flags", []),
+                    lat=position.get("lat") if position else None,
+                    lon=position.get("lon") if position else None,
+                    position_time=position.get("event_time") if position else None,
+                )
+            )
+        return result
+
+    def snapshot_at(self, run_id, as_of, limit=50, offset=0):
+        cutoff = timestamp(as_of)
+        with self.lock:
+            cursor = self.db.execute(
+                "SELECT coalesce(max(id),0) FROM changes WHERE run_id=?", (run_id,)
+            ).fetchone()[0]
+            counts = dict(
+                vehicles=self.db.execute(
+                    "SELECT count(DISTINCT tr_id) FROM telemetry "
+                    "WHERE run_id=? AND event_time<=? AND receive_time<=?",
+                    (run_id, cutoff, cutoff),
+                ).fetchone()[0],
+                events=self.db.execute(
+                    "SELECT count(*) FROM telemetry WHERE run_id=? AND event_time<=? AND receive_time<=?",
+                    (run_id, cutoff, cutoff),
+                ).fetchone()[0],
+                pending=self.db.execute(
+                    "SELECT count(*) FROM telemetry WHERE run_id=? AND processed=0 "
+                    "AND event_time<=? AND receive_time<=?",
+                    (run_id, cutoff, cutoff),
+                ).fetchone()[0],
+            )
+        return dict(
+            run_id=run_id,
+            event_cursor=cursor,
+            snapshot_id=f"{run_id}:{cursor}:{cutoff}",
+            counts=counts,
+            vehicles=self.vehicles_at(run_id, as_of, limit, offset),
+        )
+
     def bind_device(self, unit_id, tr_id):
         with self.transaction() as db:
             old = db.execute(
@@ -117,6 +264,29 @@ class Store:
                 "SELECT tr_id FROM bindings WHERE unit_id=?", (str(unit_id),)
             ).fetchone()
             return row[0] if row else None
+
+    def _advance_replay_clock(self, db, event):
+        if event.get("source") != "replay":
+            return
+        identity = event.get("source_identity") or {}
+        if identity.get("advance_clock", True) is False:
+            return
+        run_id = event["run_id"]
+        value = event["receive_time"]
+        row = db.execute(
+            "SELECT as_of FROM run_clocks WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is not None and row[0] >= value:
+            return
+        previous = row[0] if row else None
+        db.execute(
+            "INSERT INTO run_clocks(run_id,as_of,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET as_of=excluded.as_of,updated_at=excluded.updated_at",
+            (run_id, value, now()),
+        )
+        # One SSE clock tick per virtual second is enough even for dense telemetry.
+        if previous is None or previous[:19] != value[:19]:
+            self._change(db, run_id, "clock.updated", run_id, {"as_of": value})
 
     def enqueue(self, event, max_pending=10000):
         event = dict(event)
@@ -137,6 +307,7 @@ class Store:
             if old:
                 if old[0] != digest:
                     raise Conflict("event_id_conflict")
+                self._advance_replay_clock(db, event)
                 return False
             if (
                 db.execute(
@@ -157,6 +328,7 @@ class Store:
                     canonical(event),
                 ),
             )
+            self._advance_replay_clock(db, event)
             return True
 
     def _change(self, db, run_id, kind, entity_id, body):
@@ -418,18 +590,20 @@ class Store:
                 (batch["request_id"],),
             )
 
-    def predictions(self, run_id, tr_id=None, limit=50, offset=0):
+    def predictions(self, run_id, tr_id=None, limit=50, offset=0, as_of=None):
+        cutoff = timestamp(as_of) if as_of is not None else None
         with self.lock:
+            query = "SELECT body FROM predictions WHERE run_id=?"
+            params = [run_id]
             if tr_id is not None:
-                rows = self.db.execute(
-                    "SELECT body FROM predictions WHERE run_id=? AND tr_id=? ORDER BY as_of DESC,prediction_id LIMIT ? OFFSET ?",
-                    (run_id, tr_id, limit, offset),
-                )
-            else:
-                rows = self.db.execute(
-                    "SELECT body FROM predictions WHERE run_id=? ORDER BY as_of DESC,prediction_id LIMIT ? OFFSET ?",
-                    (run_id, limit, offset),
-                )
+                query += " AND tr_id=?"
+                params.append(tr_id)
+            if cutoff is not None:
+                query += " AND as_of<=?"
+                params.append(cutoff)
+            query += " ORDER BY as_of DESC,prediction_id LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            rows = self.db.execute(query, params)
             return [json.loads(r[0]) for r in rows]
 
     def snapshot(self, run_id, limit=50):
@@ -478,15 +652,24 @@ class Store:
                 "(SELECT max(id)-10000 FROM prediction_cycles)"
             )
 
-    def cycles(self, run_id, limit=50):
+    def cycles(self, run_id, limit=50, as_of=None):
+        cutoff = timestamp(as_of) if as_of is not None else None
         with self.lock:
-            return [
+            fetch_limit = 10000 if cutoff is not None else limit
+            items = [
                 json.loads(r[0])
                 for r in self.db.execute(
                     "SELECT body FROM prediction_cycles WHERE run_id=? ORDER BY id DESC LIMIT ?",
-                    (run_id, limit),
+                    (run_id, fetch_limit),
                 )
             ]
+        if cutoff is None:
+            return items
+        return [
+            item
+            for item in items
+            if item.get("as_of") is not None and timestamp(item["as_of"]) <= cutoff
+        ][:limit]
 
     def coverage(self, run_id, schedule_version, as_of, max_age_seconds=90):
         with self.lock:
@@ -524,14 +707,27 @@ class Store:
                 evaluated_at=timestamp(as_of),
             )
 
-    def dashboard(self, run_id, limit, schedule_version, as_of):
+    def dashboard(self, run_id, limit, schedule_version, as_of, causal=False):
         with self.lock:
-            data = self.snapshot(run_id, limit)
+            data = (
+                self.snapshot_at(run_id, as_of, limit)
+                if causal
+                else self.snapshot(run_id, limit)
+            )
             data["schedule_version"] = schedule_version
             data["coverage"] = self.coverage(run_id, schedule_version, as_of)
-            data["prediction_cycles"] = self.cycles(run_id, 10)
-            data["prediction_backlog"] = self.db.execute(
-                "SELECT count(*) FROM batches WHERE run_id=? AND status='pending'",
-                (run_id,),
-            ).fetchone()[0]
+            data["prediction_cycles"] = self.cycles(
+                run_id, 10, as_of if causal else None
+            )
+            if causal:
+                backlog = self.db.execute(
+                    "SELECT count(*) FROM batches WHERE run_id=? AND status='pending' AND as_of<=?",
+                    (run_id, timestamp(as_of)),
+                ).fetchone()[0]
+            else:
+                backlog = self.db.execute(
+                    "SELECT count(*) FROM batches WHERE run_id=? AND status='pending'",
+                    (run_id,),
+                ).fetchone()[0]
+            data["prediction_backlog"] = backlog
             return data

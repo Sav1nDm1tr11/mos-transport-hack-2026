@@ -48,3 +48,23 @@ TRANSPORT_ML_URL=http://127.0.0.1:8090
 
 - `soak.py` -- длительный прогон NDTP;
 - model preflight и offline replay описаны в `docs/development/ml-integration.md`.
+
+## Historical replay с живым UI
+
+В `.env`:
+
+```env
+TRANSPORT_RUN_ID=validation-demo
+TRANSPORT_SCHEDULE_VERSION=validation
+TRANSPORT_CLOCK_MODE=replay
+TRANSPORT_PREDICTION_INTERVAL=60
+TRANSPORT_ML_URL=http://127.0.0.1:8090
+```
+
+После перезапуска ML и backend в третьем терминале достаточно:
+
+```bash
+scripts/dev/run-replay-demo.sh
+```
+
+Скрипт делает causal warm-up, затем около 90 секунд проигрывает 15 виртуальных минут с автоматическими prediction cycles. Откройте `http://127.0.0.1:8000/` и выберите поток из `TRANSPORT_RUN_ID`. Dashboard, карта, свежесть телеметрии и актуальность прогноза используют виртуальное время. Подробности -- `tools/csv-replay/README.md`.

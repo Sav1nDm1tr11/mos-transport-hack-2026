@@ -159,3 +159,90 @@ def test_nonfinite_nested_metadata_is_rejected_before_storage(client):
         headers={**HEADERS, "Content-Type": "application/json"},
     )
     assert response.status_code == 422
+
+
+def test_replay_mode_uses_virtual_clock_and_causal_dashboard(tmp_path):
+    app = create_app(
+        Settings(
+            db_path=str(tmp_path / "replay.db"),
+            api_token=TOKEN,
+            ndtp_port=0,
+            run_id="replay",
+            schedule_version="validation",
+            clock_mode="replay",
+            prediction_interval=3600,
+        )
+    )
+    old = datetime(2026, 1, 6, 9, 30, tzinfo=UTC)
+    later = old + timedelta(minutes=10)
+    with TestClient(app) as c:
+        c.put("/api/v1/devices/42", json={"tr_id": "bus"}, headers=HEADERS)
+        for eid, when, speed in (("old", old, 10), ("later", later, 40)):
+            body = payload(eid)
+            body.update(
+                run_id="replay",
+                source="replay",
+                event_time=when.isoformat(),
+                receive_time=when.isoformat(),
+                ingested_at=when.isoformat(),
+                speed_kmh=speed,
+            )
+            assert c.post("/api/v1/telemetry", json=body, headers=HEADERS).status_code == 202
+
+        # Rewind the replay clock without deleting later stored telemetry.
+        response = c.put(
+            "/api/v1/replay-clock",
+            json={"as_of": old.isoformat()},
+            headers=HEADERS,
+        )
+        assert response.status_code == 200
+        assert response.json()["run_id"] == "replay"
+        dashboard = c.get("/api/v1/dashboard?run_id=replay", headers=HEADERS).json()
+        assert dashboard["clock_mode"] == "replay"
+        assert datetime.fromisoformat(dashboard["server_time"]) == old
+        assert dashboard["counts"]["events"] == 1
+        assert dashboard["vehicles"][0]["speed_kmh"] == 10
+
+
+def test_replay_scheduler_follows_virtual_clock_without_wall_time(tmp_path):
+    app = create_app(
+        Settings(
+            db_path=str(tmp_path / "replay-scheduler.db"),
+            api_token=TOKEN,
+            ndtp_port=0,
+            run_id="replay-auto",
+            schedule_version="validation",
+            clock_mode="replay",
+            prediction_interval=30,
+        )
+    )
+    t = datetime(2026, 1, 6, 9, 30, tzinfo=UTC)
+    with TestClient(app) as c:
+        c.put("/api/v1/devices/42", json={"tr_id": "bus"}, headers=HEADERS)
+        visit = {
+            "schedule_version": "validation",
+            "stop_visit_id": "stop",
+            "tr_id": "bus",
+            "time_begin": (t + timedelta(minutes=12)).isoformat(),
+        }
+        c.post("/api/v1/schedules", json=[visit], headers=HEADERS)
+        body = payload("replay-auto-event")
+        body.update(
+            run_id="replay-auto",
+            source="replay",
+            event_time=t.isoformat(),
+            receive_time=t.isoformat(),
+            ingested_at=t.isoformat(),
+        )
+        c.post("/api/v1/telemetry", json=body, headers=HEADERS)
+
+        items = []
+        for _ in range(100):
+            items = c.get(
+                "/api/v1/predictions?run_id=replay-auto", headers=HEADERS
+            ).json()["items"]
+            if items:
+                break
+            time.sleep(0.02)
+        assert len(items) == 1
+        assert datetime.fromisoformat(items[0]["as_of"].replace("Z", "+00:00")) == t

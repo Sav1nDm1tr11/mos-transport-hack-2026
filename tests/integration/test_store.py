@@ -167,3 +167,57 @@ def test_delayed_good_fix_can_advance_position_without_rolling_back_latest_packe
     assert result["event_time"] == bad["event_time"]
     assert result["position_time"] == delayed["event_time"]
     assert result["lat"] == 55.8
+
+
+def test_replay_clock_and_causal_snapshot_do_not_leak_future_telemetry(store):
+    first = event("r1")
+    first["run_id"] = "replay"
+    first["event_time"] = (NOW - timedelta(minutes=5)).isoformat()
+    first["receive_time"] = first["event_time"]
+    first["speed_kmh"] = 10
+    second = event("r2")
+    second["run_id"] = "replay"
+    second["event_time"] = (NOW + timedelta(minutes=5)).isoformat()
+    second["receive_time"] = second["event_time"]
+    second["speed_kmh"] = 40
+    second["lat"] = 55.8
+
+    store.enqueue(first)
+    store.enqueue(second)
+    store.process_pending()
+    store.set_run_clock("replay", NOW)
+
+    assert store.run_clock("replay") == NOW.isoformat()
+    snap = store.snapshot_at("replay", NOW, 50)
+    assert snap["counts"] == {"vehicles": 1, "events": 1, "pending": 0}
+    assert snap["vehicles"][0]["speed_kmh"] == 10
+    assert snap["vehicles"][0]["lat"] == 55.7
+
+    later = store.snapshot_at("replay", NOW + timedelta(minutes=6), 50)
+    assert later["counts"]["events"] == 2
+    assert later["vehicles"][0]["speed_kmh"] == 40
+    assert later["vehicles"][0]["lat"] == 55.8
+
+
+def test_replay_duplicate_can_advance_clock_after_rewind(store):
+    replay = event("duplicate-clock")
+    replay["run_id"] = "replay"
+    replay["source"] = "replay"
+    replay["event_time"] = NOW.isoformat()
+    replay["receive_time"] = NOW.isoformat()
+    replay["source_identity"] = {"advance_clock": True}
+
+    assert store.enqueue(replay) is True
+    store.set_run_clock("replay", NOW - timedelta(minutes=1))
+    assert store.enqueue(replay) is False
+    assert store.run_clock("replay") == NOW.isoformat()
+
+
+def test_replay_warmup_does_not_advance_clock(store):
+    replay = event("warmup")
+    replay["run_id"] = "replay"
+    replay["source"] = "replay"
+    replay["source_identity"] = {"advance_clock": False}
+
+    assert store.enqueue(replay) is True
+    assert store.run_clock("replay") is None
